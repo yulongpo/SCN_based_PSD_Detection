@@ -1,0 +1,11 @@
+# CMake/Visual Studio generated output
+out/
+.vs/
+CMakeUserPresets.json
+
+# Local runtime data
+*.user
+*.suo
+*.pdb
+*.obj
+*.ipch

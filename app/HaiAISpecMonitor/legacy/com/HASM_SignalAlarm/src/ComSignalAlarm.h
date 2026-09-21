@@ -1,0 +1,39 @@
+#pragma once
+#include "ComStdAfx.h"
+#include "radioai/icd/HQSigMF.hpp"
+#include "radioai/icd/SignalData.hpp"
+#include "core/SignalAlarmProcessor.h"
+#include <string>
+
+class ComSignalAlarm : public radioai::core::Com
+{
+public:
+    enum EPortDef
+    {
+        E_IPORT_HQSIGMF           = 1,
+        E_IPORT_ALARM_RULE_OP_REQ = 2,
+        E_OPORT_ALARM_RULES       = 1,
+        E_OPORT_HQSIGMF           = 2,
+        E_OPORT_ALARM_RULE_OP_RESP = 3,
+    };
+
+public:
+    ComSignalAlarm();
+    ~ComSignalAlarm();
+
+    virtual int init() override;
+    virtual int start() override;
+    virtual void stop() override;
+    virtual int reset() override;
+    virtual int checkParam(const std::map<std::string, std::string>& params) override;
+    virtual int updateParam(const std::map<std::string, std::string>& params) override;
+    virtual int process(int portId, radioai::core::ComData* data) override;
+
+private:
+    void reportRules();
+    int persistRules();
+
+    SignalAlarmProcessor* _processor = nullptr;
+    std::string _rules_json_path;
+    bool _inited = false;
+};

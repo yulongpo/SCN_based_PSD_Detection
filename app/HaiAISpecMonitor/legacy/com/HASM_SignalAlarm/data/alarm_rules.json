@@ -1,0 +1,64 @@
+{
+    "rules": [
+        {
+            "rule_id": 1,
+            "name": "FM广播频段告警",
+            "enable": 1,
+            "bgn_freq": 87000000,
+            "end_freq": 108000000,
+            "carry_type": 0,
+            "alarm_level": 1,
+            "sig_min_bw": 100000,
+            "sig_max_bw": 300000,
+            "note": "FM广播频段 87-108MHz，监测非法占用"
+        },
+        {
+            "rule_id": 2,
+            "name": "航空频段严重告警",
+            "enable": 1,
+            "bgn_freq": 108000000,
+            "end_freq": 137000000,
+            "carry_type": 0,
+            "alarm_level": 2,
+            "sig_min_bw": 5000,
+            "sig_max_bw": 50000,
+            "note": "航空通信频段 108-137MHz，严重告警等级"
+        },
+        {
+            "rule_id": 3,
+            "name": "对讲机突发信号监测",
+            "enable": 1,
+            "bgn_freq": 400000000,
+            "end_freq": 470000000,
+            "carry_type": 1,
+            "alarm_level": 1,
+            "sig_min_bw": 12500,
+            "sig_max_bw": 25000,
+            "note": "400-470MHz 对讲机频段，突发信号监测"
+        },
+        {
+            "rule_id": 4,
+            "name": "LTE疑似信号告警",
+            "enable": 1,
+            "bgn_freq": 1800000000,
+            "end_freq": 1900000000,
+            "carry_type": 0,
+            "alarm_level": 1,
+            "sig_min_bw": 5000000,
+            "sig_max_bw": 20000000,
+            "note": "1800MHz LTE频段，带宽5-20MHz"
+        },
+        {
+            "rule_id": 5,
+            "name": "5G NR频段监测",
+            "enable": 0,
+            "bgn_freq": 3300000000,
+            "end_freq": 3600000000,
+            "carry_type": 0,
+            "alarm_level": 2,
+            "sig_min_bw": 10000000,
+            "sig_max_bw": 100000000,
+            "note": "3.3-3.6GHz 5G频段（当前未启用）"
+        }
+    ]
+}

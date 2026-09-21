@@ -1,0 +1,66 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "vs2026-qt611-debug",
+      "displayName": "VS 2026 / Qt 6.11.1 / Debug",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "D:/softwares/Qt/6.11.1/msvc2022_64",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "SCN_BUILD_TESTS": "ON",
+        "SCN_BUILD_DETECTION_LAB": "ON"
+      }
+    },
+    {
+      "name": "vs2026-qt611-release",
+      "displayName": "VS 2026 / Qt 6.11.1 / Release",
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64",
+      "binaryDir": "${sourceDir}/out/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_PREFIX_PATH": "D:/softwares/Qt/6.11.1/msvc2022_64",
+        "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "SCN_BUILD_TESTS": "ON",
+        "SCN_BUILD_DETECTION_LAB": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "vs2026-qt611-debug",
+      "configurePreset": "vs2026-qt611-debug",
+      "configuration": "Debug"
+    },
+    {
+      "name": "vs2026-qt611-release",
+      "configurePreset": "vs2026-qt611-release",
+      "configuration": "Release"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "vs2026-qt611-debug",
+      "configurePreset": "vs2026-qt611-debug",
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "vs2026-qt611-release",
+      "configurePreset": "vs2026-qt611-release",
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+<RCC>
+    <qresource prefix="/">
+        <file alias="title/app.ico">../legacy/res/img/title/app.ico</file>
+        <file alias="title/title_log.png">../legacy/res/img/title/title_log.png</file>
+        <file alias="title/min.png">../legacy/res/img/title/min.png</file>
+        <file alias="title/max.png">../legacy/res/img/title/max.png</file>
+        <file alias="title/close.png">../legacy/res/img/title/close.png</file>
+        <file alias="title/btn_active.png">../legacy/res/img/title/btn_active.png</file>
+        <file alias="title/collect_btn.png">../legacy/res/img/title/collect_btn.png</file>
+        <file alias="title/collect_btn_mouseOver.png">../legacy/res/img/title/collect_btn_mouseOver.png</file>
+        <file alias="title/playback.png">../legacy/res/img/title/playback.png</file>
+        <file alias="title/playback_mouseOver.png">../legacy/res/img/title/playback_mouseOver.png</file>
+        <file alias="title/setting.png">../legacy/res/img/title/setting.png</file>
+        <file alias="title/setting_mouseOver.png">../legacy/res/img/title/setting_mouseOver.png</file>
+        <file alias="status/cpu.png">../legacy/res/img/status/cpu.png</file>
+        <file alias="status/gpu.png">../legacy/res/img/status/gpu.png</file>
+        <file alias="status/ram.png">../legacy/res/img/status/ram.png</file>
+        <file alias="status/mem.png">../legacy/res/img/status/mem.png</file>
+        <file alias="button/primary_bg.png">../legacy/res/img/button/primary_bg.png</file>
+        <file alias="button/default.png">../legacy/res/img/button/default.png</file>
+        <file alias="button/folder.png">../legacy/res/img/button/folder.png</file>
+        <file alias="button/role_bg.svg">../legacy/res/img/button/role_bg.svg</file>
+        <file alias="collect/critical_alert.png">../legacy/res/img/collect/critical_alert.png</file>
+        <file alias="collect/general_alarm.png">../legacy/res/img/collect/general_alarm.png</file>
+        <file alias="collect/signal_total.png">../legacy/res/img/collect/signal_total.png</file>
+        <file alias="recordplayback/info.png">../legacy/res/img/recordplayback/info.png</file>
+        <file alias="recordplayback/play.png">../legacy/res/img/recordplayback/play.png</file>
+        <file alias="recordplayback/export.png">../legacy/res/img/recordplayback/export.png</file>
+        <file alias="recordplayback/delete.png">../legacy/res/img/recordplayback/delete.png</file>
+        <file alias="recordplayback/custom.png">../legacy/res/img/recordplayback/custom.png</file>
+        <file alias="recordplayback/close.png">../legacy/res/img/recordplayback/close.png</file>
+        <file alias="recordplayback/back.png">../legacy/res/img/recordplayback/back.png</file>
+        <file alias="systemSetting/correct.png">../legacy/res/img/systemSetting/correct.png</file>
+        <file alias="systemSetting/update.png">../legacy/res/img/systemSetting/update.png</file>
+        <file alias="systemSetting/download.png">../legacy/res/img/systemSetting/download.png</file>
+    </qresource>
+</RCC>

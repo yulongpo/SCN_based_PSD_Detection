@@ -1,0 +1,485 @@
+{
+	"base" : 
+	{
+		"coms_dir" : "./coms",
+		"schedule" : 
+			{
+				"cores" : "0;1",
+				"idle_wait_strategy" : "yield"
+			},
+		"inPorts" : [
+			{
+				"name" : "SignalAlarmRuleOpReq",
+				"id" : 1,
+				"com_name" : "HASM_SignalAlarm",
+				"com_port_id" : 2
+			},
+			{
+				"name" : "SignalDetailPerFileQueryReq",
+				"id" : 2,
+				"com_name" : "HASM_SignalRepo",
+				"com_port_id" : 3
+			},
+			{
+				"name" : "SpectrumFileDelReq",
+				"id" : 3,
+				"com_name" : "HASM_SignalRepo",
+				"com_port_id" : 4
+			},
+			{
+				"name" : "SignalDetailPerFileDelReq",
+				"id" : 4,
+				"com_name" : "HASM_SignalRepo",
+				"com_port_id" : 5
+			},
+			{
+				"name" : "SignalWhitelistOpReq",
+				"id" : 5,
+				"com_name" : "HASM_SignalWhitelist",
+				"com_port_id" : 2
+			}			
+		],
+		"outPorts" : 
+		[
+			{
+				"name" : "SignalAlarmRules",
+				"id" : 1,
+				"com_name" : "HASM_SignalAlarm",
+				"com_port_id" : 1
+			},
+			{
+				"name" : "HQSigMF",
+				"id" : 2,
+				"com_name" : "HASM_SignalAlarm",
+				"com_port_id" : 2
+			},
+			{
+				"name": "SignalAlarmRuleOpResp",
+				"id": 3,
+				"com_name": "HASM_SignalAlarm",
+				"com_port_id": 3
+			},
+			{
+				"name" : "SpectrumFileInfos",
+				"id" : 4,
+				"com_name" : "HASM_SignalRepo",
+				"com_port_id" : 1
+			},
+			{
+				"name" : "SpectrumFileInfo",
+				"id" : 5,
+				"com_name" : "HASM_SignalRepo",
+				"com_port_id" : 2
+			},
+			{
+				"name": "SignalDetailPerFileQueryResp",
+				"id": 6,
+				"com_name": "HASM_SignalRepo",
+				"com_port_id": 3
+			},
+			{
+				"name": "SpectrumFileDelResp",
+				"id": 7,
+				"com_name": "HASM_SignalRepo",
+				"com_port_id": 4
+			},
+			{
+				"name": "SignalDetailPerFileDelResp",
+				"id": 8,
+				"com_name": "HASM_SignalRepo",
+				"com_port_id": 5
+			},
+			{
+				"name" : "SignalWhitelists",
+				"id" : 9,
+				"com_name" : "HASM_SignalWhitelist",
+				"com_port_id" : 1
+			},
+			{
+				"name": "SignalWhitelistOpResp",
+				"id": 10,
+				"com_name": "HASM_SignalWhitelist",
+				"com_port_id": 3
+			}		
+		]
+	},
+  "coms": [
+    {
+      "name": "SpectrumSource",
+      "lib_name": "SpectrumSource",
+      "params": [
+        {
+          "name": "name",
+          "string_val": "BB60C"
+        },
+        {
+          "name": "enable_source_switch",
+          "string_val": "0"
+        },		
+        {
+          "name": "fc",
+          "string_val": "3025000000"
+        },
+        {
+          "name": "span",
+          "string_val": "5950000000"
+        },
+        {
+          "name": "rbw",
+          "string_val": "40000"
+        },
+        {
+          "name": "ref_level",
+          "string_val": "-35.000000"
+        },
+        {
+          "name": "save_switch",
+          "string_val": "0"
+        },
+        {
+          "name": "file_path",
+          "string_val": "../data_gongsi/spectrum_data_org/20260717_110828_010_Fc=3025000000_Bw=5950000000_Rbw=40000_Reflevel=-35_SpectrumLen=304642.dat"
+        }
+      ],
+      "inPorts": [],
+      "outPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        },
+        {
+          "name": "SourceDetail",
+          "id": 2
+        }
+      ]
+    },
+    {
+      "name": "SpectrumSmootherGPU",
+      "lib_name": "SpectrumSmootherGPU",
+      "params": [
+        {
+          "name": "accumulate_num",
+          "string_val": "5"
+        },
+        {
+          "name": "accumulate_mode",
+          "string_val": "0"
+        },
+        {
+          "name": "accumulate_step",
+          "string_val": "1"
+        }
+      ],
+      "inPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ],
+      "outPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ]
+    },
+    {
+      "name": "SigDetectionLargeBW",
+      "lib_name": "SigDetectionLargeBW",
+      "params": [
+        {
+          "name": "parallel_num",
+          "string_val": "1"
+        },
+        {
+          "name": "long_accumulate_num",
+          "string_val": "100"
+        },
+        {
+          "name": "long_min_output_frames",
+          "string_val": "5"
+        },
+        {
+          "name": "short_accumulate_num",
+          "string_val": "5"
+        },
+        {
+          "name": "overlap_ratio",
+          "string_val": "0.2"
+        },
+        {
+          "name": "scn_model_path",
+          "string_val": "../models/scn_model.engine"
+        },
+        {
+          "name": "iou",
+          "string_val": "0.1"
+        },
+        {
+          "name": "confidence",
+          "string_val": "0.1"
+        }
+      ],
+      "inPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ],
+      "outPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ]
+    },
+    {
+      "name": "DetectionOverlapFusionCPU",
+      "lib_name": "DetectionOverlapFusionCPU",
+      "params": [
+        {
+          "name": "iou_threshold",
+          "string_val": "0.10"
+        },
+        {
+          "name": "max_objects",
+          "string_val": "4000"
+        }
+      ],
+      "inPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ],
+      "outPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ]
+    },
+    {
+      "name": "SignalTrackerCPU",
+      "lib_name": "SignalTrackerCPU",
+      "params": [
+        {
+          "name": "track_ttl_ms",
+          "string_val": "60000"
+        },
+        {
+          "name": "tentative_ttl_ms",
+          "string_val": "60000"
+        },
+        {
+          "name": "confirm_hits",
+          "string_val": "2"
+        },
+        {
+          "name": "merge_iou_threshold",
+          "string_val": "0.10"
+        },
+        {
+          "name": "max_filter_dt_ms",
+          "string_val": "100"
+        },
+        {
+          "name": "max_center_step_ratio",
+          "string_val": "0.15"
+        },
+        {
+          "name": "max_bandwidth_step_ratio",
+          "string_val": "0.25"
+        }
+      ],
+      "inPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ],
+      "outPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        }
+      ]
+    },
+	{
+      "name": "HASM_SignalWhitelist",
+      "lib_name": "HASM_SignalWhitelist",
+      "params": [
+        {
+          "name": "whitelist_json_path",
+          "string_val": "../config/HaiAISpecMonitor/whitelists.json"
+        }
+      ],
+      "inPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        },
+        {
+          "name": "SignalWhitelistOpReq",
+          "id": 2
+        }
+      ],
+      "outPorts": [
+        {
+          "name": "SignalWhitelists",
+          "id": 1
+        },
+        {
+          "name": "HQSigMF",
+          "id": 2
+        },
+        {
+          "name": "SignalWhitelistOpResp",
+          "id": 3
+        }
+      ]
+    },	
+    {
+      "name": "HASM_SignalAlarm",
+      "lib_name": "HASM_SignalAlarm",
+      "params": [
+        {
+          "name": "rules_json_path",
+          "string_val": "../config/HaiAISpecMonitor/alarm_rules.json"
+        }
+      ],
+      "inPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        },
+        {
+          "name": "SignalAlarmRuleOpReq",
+          "id": 2
+        }
+      ],
+      "outPorts": [
+        {
+          "name": "SignalAlarmRules",
+          "id": 1
+        },
+        {
+          "name": "HQSigMF",
+          "id": 2
+        },
+        {
+          "name": "SignalAlarmRuleOpResp",
+          "id": 3
+        }
+      ]
+    },
+    {
+      "name": "HASM_SignalRepo",
+      "lib_name": "HASM_SignalRepo",
+      "params": [
+        {
+          "name": "repo_dir",
+          "string_val": "../data"
+        },
+        {
+          "name": "file_size",
+          "string_val": "50"
+        }
+      ],
+      "inPorts": [
+        {
+          "name": "HQSigMF",
+          "id": 1
+        },
+        {
+          "name": "SourceDetail",
+          "id": 2
+        },
+        {
+          "name": "SignalDetailPerFileQueryReq",
+          "id": 3
+        },
+        {
+          "name": "SpectrumFileDelReq",
+          "id": 4
+        },
+        {
+          "name": "SignalDetailPerFileDelReq",
+          "id": 5
+        }
+      ],
+      "outPorts": [
+        {
+          "name": "SpectrumFileInfos",
+          "id": 1
+        },
+        {
+          "name": "SpectrumFileInfo",
+          "id": 2
+        },
+        {
+          "name": "SignalDetailPerFileQueryResp",
+          "id": 3
+        },
+        {
+          "name": "SpectrumFileDelResp",
+          "id": 4
+        },
+        {
+          "name": "SignalDetailPerFileDelResp",
+          "id": 5
+        }
+      ]
+    }
+  ],
+  "flow": [
+    {
+      "src_name": "SpectrumSource",
+      "src_port": 1,
+      "dst_name": "SpectrumSmootherGPU",
+      "dst_port": 1
+    },
+    {
+      "src_name": "SpectrumSource",
+      "src_port": 2,
+      "dst_name": "HASM_SignalRepo",
+      "dst_port": 2
+    },
+    {
+      "src_name": "SpectrumSmootherGPU",
+      "src_port": 1,
+      "dst_name": "SigDetectionLargeBW",
+      "dst_port": 1
+    },
+    {
+      "src_name": "SigDetectionLargeBW",
+      "src_port": 1,
+      "dst_name": "DetectionOverlapFusionCPU",
+      "dst_port": 1
+    },
+    {
+      "src_name": "DetectionOverlapFusionCPU",
+      "src_port": 1,
+      "dst_name": "SignalTrackerCPU",
+      "dst_port": 1
+    },	
+    {
+      "src_name": "SignalTrackerCPU",
+      "src_port": 1,
+      "dst_name": "HASM_SignalWhitelist",
+      "dst_port": 1
+    },
+    {
+      "src_name": "HASM_SignalWhitelist",
+      "src_port": 2,
+      "dst_name": "HASM_SignalAlarm",
+      "dst_port": 1
+    },
+    {
+      "src_name": "HASM_SignalAlarm",
+      "src_port": 2,
+      "dst_name": "HASM_SignalRepo",
+      "dst_port": 1
+    }
+  ]
+}

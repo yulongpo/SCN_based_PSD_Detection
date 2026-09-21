@@ -1,0 +1,3 @@
+add_library(scn_runtime INTERFACE)
+target_include_directories(scn_runtime INTERFACE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(scn_runtime INTERFACE scn_project_options)

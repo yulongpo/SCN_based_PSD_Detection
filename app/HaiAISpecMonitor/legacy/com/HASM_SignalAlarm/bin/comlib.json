@@ -1,0 +1,66 @@
+{
+    "comType": "component",
+    "displayType": "",
+    "createComFactory": "factoryCreateCom",
+    "destroyComFactory": "factoryDestroyCom",
+    "filepath": "./SignalAlarm.dll",
+    "version": "v1.0.0",
+    "inspire": false,
+    "capacity": ["stream"],
+    "professional": "",
+    "creator": "admin1",
+    "runEnv": {
+        "osType": "Windows",
+        "architecture": "x64"
+    },
+    "resourceNeeds": [
+        {
+            "tagName": "CPU",
+            "propName": "pits",
+            "value": 4
+        }
+    ],
+    "coms": [
+        {
+            "name": "SignalAlarm",
+            "description": "信号告警组件，根据检测结果和告警规则生成告警事件。",
+            "params": [
+                {
+                    "name": "rules_json_path",
+                    "type": "string",
+                    "string_val": "",
+                    "description": "告警规则JSON文件路径"
+                }
+            ],
+            "inPorts": [
+                {
+                    "name": "HQSigMF",
+                    "id": 1,
+                    "description": "信号元数据"
+                },
+                {
+                    "name": "SignalAlarmRuleOpReq",
+                    "id": 2,
+                    "description": "信号告警规则操作请求"
+                }
+            ],
+            "outPorts": [
+                {
+                    "name": "SignalAlarmRules",
+                    "id": 3,
+                    "description": "上报告警规则"
+                },
+                {
+                    "name": "HQSigMF",
+                    "id": 4,
+                    "description": "信号元数据"
+                },
+                {
+                    "name": "SignalAlarmRuleOpResp",
+                    "id": 5,
+                    "description": "信号告警规则操作回复"
+                }
+            ]
+        }
+    ]
+}

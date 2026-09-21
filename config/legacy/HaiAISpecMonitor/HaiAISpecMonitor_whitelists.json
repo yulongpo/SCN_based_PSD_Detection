@@ -1,0 +1,20 @@
+{
+    "whitelists": [
+        {
+            "id": 1,
+            "name": "preset_1",
+            "enable": 0,
+            "bgn_freq": 1831000000,
+            "end_freq": 1880000000,
+            "note": "通信终端上行信号"
+        },
+        {
+            "id": 2,
+            "name": "preset_2",
+            "enable": 0,
+            "bgn_freq": 3400000000,
+            "end_freq": 3700000000,
+            "note": "通信基站下行信号"
+        }
+    ]
+}

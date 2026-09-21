@@ -1,0 +1,42 @@
+#pragma once
+
+#include "../algorithm/types/DisplayTypes.h"
+#include "../source/SourceConfig.h"
+
+#include <QThread>
+#include <QObject>
+#include <QString>
+
+Q_DECLARE_METATYPE(scn::algorithm::DisplaySnapshot)
+Q_DECLARE_METATYPE(scn::algorithm::DisplaySnapshotPtr)
+
+namespace scn::application
+{
+
+class SessionWorker;
+
+class MonitoringSession final : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit MonitoringSession(QObject* parent = nullptr);
+    ~MonitoringSession() override;
+
+    void configure(const source::SourceConfig& config);
+    void start();
+    void pause();
+    void resume();
+    void stop();
+
+signals:
+    void snapshotReady(const algorithm::DisplaySnapshotPtr& snapshot);
+    void stateChanged(const QString& state);
+    void errorOccurred(const QString& message);
+
+private:
+    QThread m_workerThread;
+    SessionWorker* m_worker = nullptr;
+};
+
+} // namespace scn::application
