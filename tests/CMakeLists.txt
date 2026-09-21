@@ -1,5 +1,20 @@
-# Test targets are intentionally left to the user for this migration step.
-# The directory is already wired into the top-level project so Catch2,
-# GoogleTest, or organization-specific tests can be added without changing
-# the product targets.
-message(STATUS "SCN tests are configured for user-owned test implementation")
+# No framework download, GPU, device or real data file is needed for these tests.
+# The test-only factory in ScnTests.cpp prevents pulling the production backend
+# object from the static library. Never link that factory into product targets.
+add_executable(scn_tests ScnTests.cpp)
+target_link_libraries(scn_tests PRIVATE scn_algorithm scn_source scn_application scn_runtime)
+foreach(group algorithm channel pipeline source hash)
+    add_test(NAME scn_${group} COMMAND scn_tests ${group})
+    set_tests_properties(scn_${group} PROPERTIES TIMEOUT 30)
+endforeach()
+
+# Real QThread/QTimer session integration, still with a test-only backend/no GPU.
+add_executable(scn_session_tests SessionTests.cpp)
+target_link_libraries(scn_session_tests PRIVATE scn_application)
+add_test(NAME scn_session COMMAND scn_session_tests)
+set_tests_properties(scn_session PROPERTIES TIMEOUT 30)
+if(WIN32)
+    add_custom_command(TARGET scn_session_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE_DIR:scn_session_tests>
+        COMMENT "Deploying Qt Core for user-run session tests" VERBATIM)
+endif()

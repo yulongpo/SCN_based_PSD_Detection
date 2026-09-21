@@ -210,6 +210,12 @@ QString defaultSpectrumFilePath()
     return QStringLiteral(
         R"(D:\project\isa\bin\data\spectrum_data_org\20260911_152444_651_Fc=2025000000_Bw=3950000000_Rbw=50000_Reflevel=-20.0_SpectrumLen=202242.dat)");
 }
+
+bool hasDetectionObservations(const algorithm::DetectionResult& result)
+{
+    return result.stage == algorithm::DetectionStage::Accumulating ||
+           result.stage == algorithm::DetectionStage::Completed;
+}
 }
 
 MainWindow::MainWindow(application::MonitoringSession& session,
@@ -239,6 +245,14 @@ MainWindow::MainWindow(application::MonitoringSession& session,
             &m_viewModel, &viewmodel::MonitorViewModel::acceptState);
     connect(&m_session, &application::MonitoringSession::errorOccurred,
             this, &MainWindow::onError);
+    connect(&m_session, &application::MonitoringSession::detectionStatusChanged,
+            this, [this](const QString& message) {
+                m_detectionModelStatus = message;
+                if (message.contains(QStringLiteral("unavailable"), Qt::CaseInsensitive)) {
+                    clearDetectionDisplay();
+                }
+                updateDetectionStatus(m_displaySnapshot.get());
+            });
     connect(&m_session, &application::MonitoringSession::deviceStatusChanged,
             this, [this](const QString& device, const QString& status, bool connected) {
                 m_statusStrip->setDeviceConnectionStatus(device, status, connected);
@@ -257,6 +271,8 @@ MainWindow::MainWindow(application::MonitoringSession& session,
             this, [this](const QString& message) {
                 statusBar()->showMessage(message, 4000);
             });
+    connect(m_settingsPage, &SettingsPage::detectionApplyRequested,
+            this, [this] { (void)applyDetectionConfiguration(); });
     // ISA 中频谱图是频率视图的交互主控，瀑布图跟随同一范围和选中频点重算。
     connect(m_spectrum, &SpectrumWidget::viewRangeChanged,
             m_waterfall, &WaterfallWidget::setFrequencyView);
@@ -276,6 +292,7 @@ MainWindow::MainWindow(application::MonitoringSession& session,
     loadUiState();
     updateSourceControls();
     updateDisplayDomain();
+    (void)applyDetectionConfiguration();
     applyConfiguration();
     updateRuntimeStatus();
 }
@@ -633,12 +650,17 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     auto* metrics = new QHBoxLayout(metricsPanel);
     metrics->setContentsMargins(0, 0, 0, 0);
     metrics->setSpacing(8);
-    auto* critical = metricCard(QStringLiteral(":/collect/critical_alert.png"), QStringLiteral("严重警告"),
+    auto* critical = metricCard(QStringLiteral(":/collect/critical_alert.png"), QStringLiteral("严重警告\n未接入"),
                                 QStringLiteral("#E63E3E"), m_criticalAlertLabel, metricsPanel);
-    auto* general = metricCard(QStringLiteral(":/collect/general_alarm.png"), QStringLiteral("一般警告"),
+    auto* general = metricCard(QStringLiteral(":/collect/general_alarm.png"), QStringLiteral("一般警告\n未接入"),
                                QStringLiteral("#FFBA00"), m_generalAlarmLabel, metricsPanel);
     auto* total = metricCard(QStringLiteral(":/collect/signal_total.png"), QStringLiteral("信号总数"),
                              QStringLiteral("#0A8CFE"), m_signalTotalLabel, metricsPanel);
+    m_criticalAlertLabel->setText(QStringLiteral("—"));
+    m_generalAlarmLabel->setText(QStringLiteral("—"));
+    critical->setToolTip(QStringLiteral("告警规则未接入；SCN 置信度不代表告警等级。"));
+    general->setToolTip(critical->toolTip());
+    total->setToolTip(QStringLiteral("最新检测结果中的观测信号数。"));
     metrics->addWidget(critical, 1);
     metrics->addWidget(general, 1);
     metrics->addWidget(total, 1);
@@ -710,6 +732,11 @@ void MainWindow::buildSignalTable(QWidget* parent)
     auto* layout = new QVBoxLayout(panel);
     layout->setContentsMargins(12, 2, 12, 2);
 
+    m_detectionStatusLabel = new QLabel(QStringLiteral("SCN：等待初始化"), panel);
+    m_detectionStatusLabel->setTextFormat(Qt::PlainText);
+    m_detectionStatusLabel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    m_detectionStatusLabel->setMinimumWidth(0);
+    layout->addWidget(m_detectionStatusLabel);
     m_signalTable = new QTableWidget(0, 7, panel);
     m_signalTable->setObjectName(QStringLiteral("isaTable"));
     m_signalTable->setHorizontalHeaderLabels({QStringLiteral("ID"), QStringLiteral("中心频率(MHz)"),
@@ -724,9 +751,10 @@ void MainWindow::buildSignalTable(QWidget* parent)
     if (outer) outer->addWidget(panel, 0);
     connect(m_signalTable, &QTableWidget::cellDoubleClicked, this, [this](int row, int) {
         if (!m_signalTable || row < 0) return;
+        const auto* item = m_signalTable->item(row, 0);
+        if (!item) return;
         QMessageBox::information(this, QStringLiteral("信号详情"),
-            QStringLiteral("信号 ID：%1\n\n检测引擎当前处于接口模式，详细识别结果将在算法实现接入后显示。")
-                .arg(m_signalTable->item(row, 0)->text()));
+                                 item->data(Qt::UserRole).toString());
     });
 
     m_statusStrip = new StatusBarWidget(parent);
@@ -1080,6 +1108,12 @@ bool MainWindow::applyCurrentConfiguration()
         statusBar()->showMessage(validationError, 6000);
         return false;
     }
+    // SCN controls are a draft. Only their explicit Apply action changes the
+    // accepted detector configuration; source start must not commit that draft.
+    // Session.configure creates a new generation synchronously. Reject already
+    // published snapshots from the preceding run without waiting for Running.
+    m_minimumGeneration = m_latestGeneration + 1;
+    m_pendingSnapshot.reset();
     m_controller.configure(config);
     updateDisplayDomain();
     m_spectrum->resetView();
@@ -1091,16 +1125,90 @@ bool MainWindow::applyCurrentConfiguration()
     return true;
 }
 
-void MainWindow::clearMonitoringDisplay()
+bool MainWindow::applyDetectionConfiguration()
 {
+    const auto config = m_settingsPage->detectionConfig();
+    std::string error;
+    if (!algorithm::validateConfig(config, error)) {
+        m_settingsPage->setDetectionFeedback(QStringLiteral("SCN 设置未应用：%1")
+            .arg(QString::fromStdString(error)));
+        return false;
+    }
+    if (m_appliedDetectionConfig && algorithm::sameConfig(*m_appliedDetectionConfig, config)) {
+        m_settingsPage->setDetectionFeedback(QStringLiteral("SCN 设置与当前配置一致。"));
+        return true;
+    }
+    // Require the visible monitoring lifecycle to be stopped before asking for
+    // a restart. EOF can make the worker inactive just before Stopped reaches
+    // the UI; do not mistake an accepted restart for a rejected request then.
+    if (m_monitoring && m_appliedDetectionConfig &&
+        algorithm::classifyConfigChange(*m_appliedDetectionConfig, config) ==
+            algorithm::ConfigApplyResult::RequiresRestart) {
+        m_settingsPage->setDetectionFeedback(QStringLiteral(
+            "SCN 设置未应用、未保存。请先停止监测，再更换模型、GPU 或切换检测开关。"));
+        return false;
+    }
+    const auto result = m_session.configureDetection(config);
+    if (result == algorithm::ConfigApplyResult::Invalid) {
+        m_settingsPage->setDetectionFeedback(QStringLiteral("SCN 设置未应用：会话拒绝了此配置。"));
+        return false;
+    }
+    if (result == algorithm::ConfigApplyResult::RequiresRestart && m_monitoring) {
+        m_settingsPage->setDetectionFeedback(QStringLiteral(
+            "SCN 设置未应用、未保存。请先停止监测，再更换模型、GPU 或切换检测开关。"));
+        return false;
+    }
+    m_appliedDetectionConfig = config;
+    m_settingsPage->acceptDetectionConfig(config);
     m_pendingSnapshot.reset();
+    clearDetectionDisplay();
+    m_detectionModelStatus = config.enabled
+        ? QStringLiteral("SCN 配置已接收，等待检测状态。") : QStringLiteral("SCN 检测已关闭。");
+    updateDetectionStatus(m_displaySnapshot.get());
+    m_settingsPage->setDetectionFeedback(result == algorithm::ConfigApplyResult::RequiresReset
+        ? QStringLiteral("SCN 设置已应用并保存，检测累计与跟踪将重置。")
+        : QStringLiteral("SCN 设置已应用并保存。"));
+    return true;
+}
+
+void MainWindow::clearDetectionDisplay()
+{
+    m_lastDetectionKey.reset();
+    m_signalTable->setRowCount(0);
+    m_criticalAlertLabel->setText(QStringLiteral("—"));
+    m_generalAlarmLabel->setText(QStringLiteral("—"));
+    m_signalTotalLabel->setText(QStringLiteral("0"));
+    if (m_displaySnapshot) {
+        auto snapshot = std::make_shared<algorithm::DisplaySnapshot>(*m_displaySnapshot);
+        const auto generation = snapshot->detection.generation;
+        const auto version = snapshot->detection.configVersion;
+        snapshot->detection = {};
+        snapshot->detection.generation = generation;
+        snapshot->detection.configVersion = version;
+        snapshot->detection.requiredFrames = m_appliedDetectionConfig
+            ? m_appliedDetectionConfig->accumulator.frames : 16;
+        m_displaySnapshot = snapshot;
+        m_spectrum->setSnapshot(snapshot);
+    }
+}
+
+void MainWindow::clearMonitoringDisplay(bool discardCurrentGeneration)
+{
+    if (discardCurrentGeneration) m_minimumGeneration = m_latestGeneration + 1;
+    m_pendingSnapshot.reset();
+    m_displaySnapshot.reset();
+    m_lastDetectionKey.reset();
     m_spectrum->clear();
     m_waterfall->clear();
+    m_displayRateTimer.invalidate();
+    m_displayRateFrames = 0;
+    m_displayRateHz = 0;
     m_signalTable->setRowCount(0);
-    m_criticalAlertLabel->setText(QStringLiteral("0"));
-    m_generalAlarmLabel->setText(QStringLiteral("0"));
+    m_criticalAlertLabel->setText(QStringLiteral("—"));
+    m_generalAlarmLabel->setText(QStringLiteral("—"));
     m_signalTotalLabel->setText(QStringLiteral("0"));
     m_frameLabel->setText(QStringLiteral("帧号：-"));
+    updateDetectionStatus(nullptr);
 }
 
 void MainWindow::startMonitoring()
@@ -1111,14 +1219,16 @@ void MainWindow::startMonitoring()
     }
     if (!applyCurrentConfiguration()) return;
     clearMonitoringDisplay();
-    m_waitingForNewRun = true;
     m_controller.start();
+    // start() marks the session active before its worker emits Running.
+    updateButtonState(QStringLiteral("Running"));
 }
 
 void MainWindow::pauseMonitoring()
 {
     if (!m_monitoring) return;
-    if (m_stateLabel->text().contains(QStringLiteral("暂停"))) {
+    if (m_stateLabel->text().contains(QStringLiteral("暂停")) ||
+        m_stateLabel->text().contains(QStringLiteral("Paused"))) {
         m_controller.resume();
     } else {
         m_controller.pause();
@@ -1128,6 +1238,9 @@ void MainWindow::pauseMonitoring()
 void MainWindow::stopMonitoring()
 {
     m_controller.stop();
+    m_minimumGeneration = m_latestGeneration + 1;
+    m_pendingSnapshot.reset();
+    updateButtonState(QStringLiteral("Stopped"));
 }
 
 void MainWindow::selectMainPage(int index)
@@ -1179,7 +1292,11 @@ void MainWindow::updateButtonState(const QString& state)
 void MainWindow::onSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
 {
     // 采集线程可能快于屏幕刷新；只保留最新快照，避免 UI 事件队列积压旧帧。
-    if (m_waitingForNewRun) return;
+    if (!snapshot || snapshot->detection.generation < m_minimumGeneration ||
+        snapshot->detection.generation < m_latestGeneration) return;
+    m_latestGeneration = snapshot->detection.generation;
+    // A short file may reach EOF before Running is delivered. Its final result
+    // is still valid even when snapshot.running is false or startup is pending.
     m_pendingSnapshot = snapshot;
 }
 
@@ -1189,6 +1306,18 @@ void MainWindow::refreshDisplay()
     if (!snapshot) return;
     m_pendingSnapshot.reset();
 
+    if (m_displaySnapshot &&
+        m_displaySnapshot->detection.generation != snapshot->detection.generation) {
+        clearMonitoringDisplay(false);
+    }
+    if (!m_displaySnapshot) m_timeOriginNs = snapshot->frame.timestampNs;
+    const bool newRawFrame = !m_displaySnapshot ||
+        m_displaySnapshot->frame.sequence != snapshot->frame.sequence;
+    if (newRawFrame) {
+        if (!m_displayRateTimer.isValid()) m_displayRateTimer.start();
+        ++m_displayRateFrames;
+    }
+    m_displaySnapshot = snapshot;
     const double endFrequencyHz = snapshot->frame.startFrequencyHz +
         snapshot->frame.binWidthHz * static_cast<double>(snapshot->frame.powerDb.size());
     m_spectrum->setSnapshot(snapshot);
@@ -1203,59 +1332,182 @@ void MainWindow::refreshDisplay()
     } else {
         m_statusStrip->setMenuInfoVisible(false);
     }
-    updateMonitorMetrics(*snapshot);
-
-    m_signalTable->setRowCount(static_cast<int>(snapshot->detection.detections.size()));
-    for (int row = 0; row < m_signalTable->rowCount(); ++row) {
-        const auto& signal = snapshot->detection.detections.at(static_cast<std::size_t>(row));
-        m_signalTable->setItem(row, 0, tableItem(QString::number(signal.id)));
-        m_signalTable->setItem(row, 1, tableItem(QString::number(signal.centerFrequencyHz / 1e6, 'f', 3)));
-        m_signalTable->setItem(row, 2, tableItem(QString::number(signal.bandwidthHz / 1e3, 'f', 3)));
-        m_signalTable->setItem(row, 3, tableItem(QStringLiteral("接口结果")));
-        m_signalTable->setItem(row, 4, tableItem(QStringLiteral("-")));
-        m_signalTable->setItem(row, 5, tableItem(QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss"))));
-        m_signalTable->setItem(row, 6, tableItem(QStringLiteral("1")));
-    }
-
-    if (static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt()) == algorithm::SourceKind::File) {
-            m_playbackPage->rememberFile(QString::fromStdString(m_filePath->text().toStdString()),
-            m_sourceCombo->currentText(), snapshot->frame.startFrequencyHz,
-            endFrequencyHz, m_resolutionBandwidth->value(),
-            static_cast<int>(snapshot->detection.detections.size()), 0);
+    updateDetectionStatus(snapshot.get());
+    const auto& data = snapshot->detection;
+    const DetectionKey key{data.generation, data.configVersion, data.sequence, data.stage};
+    if (!m_lastDetectionKey || *m_lastDetectionKey != key) {
+        m_lastDetectionKey = key;
+        updateMonitorMetrics(*snapshot);
+        updateSignalTable(*snapshot);
+        if (fileSource) {
+            m_playbackPage->rememberFile(m_filePath->text(), m_sourceCombo->currentText(),
+                snapshot->frame.startFrequencyHz, endFrequencyHz, m_resolutionBandwidth->value(),
+                hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0, 0);
+        }
     }
 }
 
 void MainWindow::updateMonitorMetrics(const algorithm::DisplaySnapshot& snapshot)
 {
-    int critical = 0;
-    int general = 0;
-    for (const auto& signal : snapshot.detection.detections) {
-        if (signal.confidence >= 0.9F) ++critical;
-        else ++general;
+    m_criticalAlertLabel->setText(QStringLiteral("—"));
+    m_generalAlarmLabel->setText(QStringLiteral("—"));
+    const auto count = hasDetectionObservations(snapshot.detection)
+        ? snapshot.detection.detections.size() : 0;
+    m_signalTotalLabel->setText(QString::number(static_cast<qulonglong>(count)));
+}
+
+void MainWindow::updateDetectionStatus(const algorithm::DisplaySnapshot* snapshot)
+{
+    if (!m_detectionStatusLabel) return;
+    const auto config = m_appliedDetectionConfig.value_or(algorithm::DetectionConfig{});
+    QString state = config.enabled ? QStringLiteral("等待模型／数据") : QStringLiteral("已关闭");
+    QString modelInfo;
+    QString message;
+    algorithm::DetectionDiagnostics diagnostics;
+    std::size_t accumulated = 0;
+    std::size_t required = config.accumulator.frames;
+    QString sequenceAge = QStringLiteral("—");
+    std::uint64_t dropped = 0;
+    if (snapshot) {
+        const auto& data = snapshot->detection;
+        diagnostics = data.diagnostics;
+        accumulated = data.accumulatedFrames;
+        required = data.requiredFrames;
+        modelInfo = QString::fromStdString(diagnostics.modelInfo);
+        message = QString::fromStdString(diagnostics.message);
+        dropped = snapshot->droppedFrames;
+        switch (data.stage) {
+        case algorithm::DetectionStage::Accumulating: state = QStringLiteral("部分累计"); break;
+        case algorithm::DetectionStage::Completed: state = QStringLiteral("已完成"); break;
+        case algorithm::DetectionStage::Error: state = QStringLiteral("检测失败"); break;
+        case algorithm::DetectionStage::Cancelled: state = QStringLiteral("已取消"); break;
+        case algorithm::DetectionStage::Bypassed:
+            state = config.enabled ? QStringLiteral("等待检测") : QStringLiteral("已关闭");
+            break;
+        }
+        if (data.pointCount > 0 && snapshot->frame.sequence >= data.sequence) {
+            sequenceAge = QString::number(snapshot->frame.sequence - data.sequence);
+        }
     }
-    m_criticalAlertLabel->setText(QString::number(critical));
-    m_generalAlarmLabel->setText(QString::number(general));
-    m_signalTotalLabel->setText(QString::number(snapshot.detection.detections.size()));
+    if (m_detectionModelStatus.contains(QStringLiteral("unavailable"), Qt::CaseInsensitive)) {
+        state = QStringLiteral("模型不可用");
+    }
+    m_detectionStatusLabel->setText(QStringLiteral(
+        "SCN：%1 | 累计 %2/%3 | 检测 %4 ms | 延迟 %5 ms | 丢帧 %6")
+        .arg(state).arg(static_cast<qulonglong>(accumulated)).arg(static_cast<qulonglong>(required))
+        .arg(diagnostics.processingTimeMs, 0, 'f', 1).arg(diagnostics.resultLatencyMs, 0, 'f', 1)
+        .arg(dropped));
+    QStringList details{
+        QStringLiteral("模型状态：%1").arg(m_detectionModelStatus),
+        QStringLiteral("模型路径：%1").arg(QString::fromStdString(config.detector.modelPath)),
+        QStringLiteral("GPU：%1").arg(config.detector.deviceIndex),
+        QStringLiteral("模型信息：%1").arg(modelInfo.isEmpty() ? QStringLiteral("—") : modelInfo),
+        QStringLiteral("排队：%1 | 已完成：%2")
+            .arg(static_cast<qulonglong>(diagnostics.queueDepth)).arg(diagnostics.completedCount),
+        QStringLiteral("检测 P50 / P95：%1 / %2 ms")
+            .arg(diagnostics.processingP50Ms, 0, 'f', 1).arg(diagnostics.processingP95Ms, 0, 'f', 1),
+        QStringLiteral("检测完成吞吐：%1 帧/s | UI原始帧提交：%2 帧/s（非GPU呈现FPS）")
+            .arg(diagnostics.throughputHz, 0, 'f', 2).arg(m_displayRateHz, 0, 'f', 2),
+        QStringLiteral("结果落后原始帧：%1 帧").arg(sequenceAge),
+        QStringLiteral("累计 / 推理 / 后处理：%1 / %2 / %3 ms")
+            .arg(diagnostics.accumulationTimeMs, 0, 'f', 1)
+            .arg(diagnostics.inferenceTimeMs, 0, 'f', 1)
+            .arg(diagnostics.postprocessTimeMs, 0, 'f', 1),
+        QStringLiteral("窗口 / 候选 / CNR 通过 / 截断：%1 / %2 / %3 / %4")
+            .arg(static_cast<qulonglong>(diagnostics.windowCount))
+            .arg(static_cast<qulonglong>(diagnostics.candidateCount))
+            .arg(static_cast<qulonglong>(diagnostics.cnrAcceptedCount))
+            .arg(static_cast<qulonglong>(diagnostics.truncatedCount))};
+    if (snapshot) {
+        const auto& data = snapshot->detection;
+        details << QStringLiteral("轮次 / 配置版本 / 结果序号：%1 / %2 / %3")
+            .arg(data.generation).arg(data.configVersion).arg(data.sequence);
+        details << QStringLiteral("累计起始序号：%1 | 原始帧序号：%2")
+            .arg(data.firstSequence).arg(snapshot->frame.sequence);
+    }
+    if (!message.isEmpty()) details << message;
+    m_detectionStatusLabel->setToolTip(details.join(QLatin1Char('\n')));
+}
+
+QString MainWindow::formatDetectionTime(std::int64_t timestampNs, bool fileSource) const
+{
+    if (fileSource) {
+        return QStringLiteral("回放 %1 s").arg(static_cast<double>(timestampNs) / 1.0e9, 0, 'f', 3);
+    }
+    // Hardware timestamps are monotonic, not Unix epoch. Keep the origin fixed
+    // for this generation; earlier observations may precede the first UI frame.
+    const double seconds = static_cast<double>(static_cast<long double>(timestampNs) -
+                                               static_cast<long double>(m_timeOriginNs)) / 1.0e9;
+    return QStringLiteral("本轮首帧%1%2 s")
+        .arg(seconds >= 0.0 ? QStringLiteral("+") : QString())
+        .arg(seconds, 0, 'f', 3);
+}
+
+QString MainWindow::signalDetails(const algorithm::DetectedSignal& signal, bool fileSource) const
+{
+    QString branch;
+    switch (signal.branch) {
+    case algorithm::SpectrumBranch::Average: branch = QStringLiteral("平均谱（Average）"); break;
+    case algorithm::SpectrumBranch::Maximum: branch = QStringLiteral("最大谱（Maximum）"); break;
+    case algorithm::SpectrumBranch::Both: branch = QStringLiteral("双分支融合（Both）"); break;
+    }
+    const QStringList details{
+        QStringLiteral("信号 ID：%1").arg(signal.id),
+        QStringLiteral("起始频率：%1 Hz").arg(signal.startFrequencyHz, 0, 'f', 3),
+        QStringLiteral("终止频率：%1 Hz").arg(signal.endFrequencyHz, 0, 'f', 3),
+        QStringLiteral("中心频率：%1 Hz").arg(signal.centerFrequencyHz, 0, 'f', 3),
+        QStringLiteral("带宽：%1 Hz").arg(signal.bandwidthHz, 0, 'f', 3),
+        QStringLiteral("置信度：%1").arg(signal.confidence, 0, 'f', 6),
+        QStringLiteral("CNR（snrDb）：%1 dB").arg(signal.snrDb, 0, 'f', 3),
+        QStringLiteral("信号电平：%1 dBm").arg(signal.signalLevelDbm, 0, 'f', 3),
+        QStringLiteral("噪声电平：%1 dBm").arg(signal.noiseLevelDbm, 0, 'f', 3),
+        QStringLiteral("检测分支：%1").arg(branch),
+        QStringLiteral("首次出现：%1").arg(formatDetectionTime(signal.firstSeenNs, fileSource)),
+        QStringLiteral("最近出现：%1").arg(formatDetectionTime(signal.lastSeenNs, fileSource)),
+        QStringLiteral("firstSeenNs：%1 | lastSeenNs：%2").arg(signal.firstSeenNs).arg(signal.lastSeenNs),
+        QStringLiteral("出现次数：%1").arg(signal.occurrenceCount),
+        QStringLiteral("信号类型：未分类 | 告警等级：—（未接入）"),
+        fileSource ? QStringLiteral("回放时间由文件帧位置与帧率生成，与实际播放速度无关。")
+                   : QStringLiteral("硬件时间相对本轮首个显示帧；负值表示更早的观测，不是日历时间。")};
+    return details.join(QLatin1Char('\n'));
+}
+
+void MainWindow::updateSignalTable(const algorithm::DisplaySnapshot& snapshot)
+{
+    const auto& data = snapshot.detection;
+    const bool fileSource = m_sourceCombo->currentData().toInt() == static_cast<int>(algorithm::SourceKind::File);
+    const int count = hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0;
+    m_signalTable->setRowCount(count);
+    for (int row = 0; row < count; ++row) {
+        const auto& signal = data.detections.at(static_cast<std::size_t>(row));
+        auto* id = tableItem(QString::number(signal.id));
+        const auto details = signalDetails(signal, fileSource);
+        id->setData(Qt::UserRole, details);
+        id->setToolTip(details);
+        m_signalTable->setItem(row, 0, id);
+        m_signalTable->setItem(row, 1, tableItem(QString::number(signal.centerFrequencyHz / 1e6, 'f', 3)));
+        m_signalTable->setItem(row, 2, tableItem(QString::number(signal.bandwidthHz / 1e3, 'f', 3)));
+        m_signalTable->setItem(row, 3, tableItem(QStringLiteral("未分类")));
+        m_signalTable->setItem(row, 4, tableItem(QStringLiteral("—")));
+        auto* lastSeen = tableItem(formatDetectionTime(signal.lastSeenNs, fileSource));
+        lastSeen->setToolTip(details);
+        m_signalTable->setItem(row, 5, lastSeen);
+        m_signalTable->setItem(row, 6, tableItem(QString::number(signal.occurrenceCount)));
+    }
 }
 
 void MainWindow::onStateChanged(const QString& state)
 {
     m_stateLabel->setText(state);
-    if (state.contains(QStringLiteral("Running")) || state.contains(QStringLiteral("运行"))) {
-        m_waitingForNewRun = false;
-    } else if (state.contains(QStringLiteral("Stopped")) ||
-               state.contains(QStringLiteral("停止")) ||
-               state.contains(QStringLiteral("failed")) ||
-               state.contains(QStringLiteral("失败"))) {
-        m_waitingForNewRun = false;
-    }
     updateButtonState(state);
     statusBar()->showMessage(state, 4000);
 }
 
 void MainWindow::onError(const QString& message)
 {
-    m_waitingForNewRun = false;
+    m_pendingSnapshot.reset();
+    clearDetectionDisplay();
+    updateDetectionStatus(m_displaySnapshot.get());
     m_stateLabel->setText(QStringLiteral("错误"));
     statusBar()->showMessage(message, 8000);
     QMessageBox::warning(this, QStringLiteral("监测操作失败"), message);
@@ -1264,18 +1516,30 @@ void MainWindow::onError(const QString& message)
 
 void MainWindow::onReplayRequested(const QString& path)
 {
+    // Replay can be invoked while the monitor's source controls are disabled.
+    // Invalidate the old session before changing its visible file/metadata.
+    stopMonitoring();
     m_filePath->setText(path);
     if (m_sourceCombo->currentData().toInt() != static_cast<int>(algorithm::SourceKind::File)) {
         m_sourceCombo->setCurrentIndex(2);
     } else {
         applyFileMetadata(path);
     }
+    clearMonitoringDisplay();
     selectMainPage(0);
-    statusBar()->showMessage(QStringLiteral("已选择回放文件，可点击开始监测读取。"), 5000);
+    if (applyCurrentConfiguration())
+        statusBar()->showMessage(QStringLiteral("已切换回放文件，可点击开始监测读取。"), 5000);
 }
 
 void MainWindow::updateRuntimeStatus()
 {
+    // Settle on the wall-clock timer, including empty windows after pause/EOF.
+    if (m_displayRateTimer.isValid()) {
+        const auto elapsedMs = m_displayRateTimer.restart();
+        m_displayRateHz = elapsedMs > 0 ? 1000.0 * m_displayRateFrames / elapsedMs : 0;
+        m_displayRateFrames = 0;
+    }
+    updateDetectionStatus(m_displaySnapshot.get());
     m_statusStrip->setTime(QDateTime::currentDateTime().toString(QStringLiteral("hh:mm:ss")));
     m_statusStrip->setLoadValues(0, 0, 0);
 }

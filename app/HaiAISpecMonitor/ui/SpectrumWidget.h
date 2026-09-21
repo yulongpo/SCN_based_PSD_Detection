@@ -94,6 +94,8 @@ private:
                               double viewStartHz, double viewEndHz) const;
 
     algorithm::DisplaySnapshotPtr m_snapshot;
+    // Stable per raw frame: render-worker accumulation uses snapshot identity.
+    algorithm::DisplaySnapshotPtr m_renderSnapshot;
     double m_viewStartHz = 0.0;
     double m_viewEndHz = 0.0;
     double m_selectedFrequencyHz = 0.0;

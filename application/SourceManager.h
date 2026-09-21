@@ -16,6 +16,7 @@ public:
     void pause(bool paused);
     void stop();
     bool read(algorithm::SpectrumFrame& frame);
+    bool atFileEnd() const;
 
     [[nodiscard]] algorithm::SourceKind kind() const noexcept { return m_config.kind; }
     [[nodiscard]] const source::SourceConfig& config() const noexcept { return m_config; }

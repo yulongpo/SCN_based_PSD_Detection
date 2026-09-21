@@ -2,6 +2,7 @@ set(CMAKE_AUTOMOC ON)
 
 add_library(scn_application STATIC
     MonitoringSession.cpp
+    SessionPipeline.cpp
     SourceManager.cpp
     PresentationModel.cpp
 )

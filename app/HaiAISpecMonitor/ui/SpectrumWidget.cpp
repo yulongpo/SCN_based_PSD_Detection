@@ -14,6 +14,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <utility>
 
 namespace scn::app
@@ -85,7 +86,31 @@ QPaintEngine* SpectrumWidget::paintEngine() const
 void SpectrumWidget::setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
 {
     if (m_snapshot == snapshot) return;
+    if (m_snapshot && snapshot &&
+        m_snapshot->detection.generation != snapshot->detection.generation) {
+        clear();
+    }
+    if (m_snapshot && snapshot) {
+        const auto& previous = m_snapshot->frame;
+        const auto& next = snapshot->frame;
+        const bool sameFrame = m_snapshot->detection.generation == snapshot->detection.generation &&
+            previous.sequence == next.sequence && previous.timestampNs == next.timestampNs &&
+            previous.sourceName == next.sourceName &&
+            previous.startFrequencyHz == next.startFrequencyHz && previous.binWidthHz == next.binWidthHz &&
+            previous.resolutionBandwidthHz == next.resolutionBandwidthHz &&
+            (previous.referenceLevelDbm == next.referenceLevelDbm ||
+             (std::isnan(previous.referenceLevelDbm) && std::isnan(next.referenceLevelDbm))) &&
+            previous.powerDb.size() == next.powerDb.size() &&
+            (next.powerDb.empty() || std::memcmp(previous.powerDb.data(), next.powerDb.data(),
+                                                next.powerDb.size() * sizeof(float)) == 0);
+        if (sameFrame) {
+            m_snapshot = snapshot;
+            update(); // New detections only; keep geometry and the 100-frame traces.
+            return;
+        }
+    }
     m_snapshot = snapshot;
+    m_renderSnapshot = snapshot;
     if (m_snapshot && std::isfinite(m_snapshot->frame.referenceLevelDbm)) {
         m_displayStartHz = m_snapshot->frame.startFrequencyHz;
         m_displayEndHz = m_snapshot->frame.endFrequencyHz();
@@ -202,6 +227,7 @@ void SpectrumWidget::clear()
     if (m_renderWorker) m_renderWorker->reset(m_renderGeneration);
     if (m_renderSettleTimer) m_renderSettleTimer->stop();
     m_snapshot.reset();
+    m_renderSnapshot.reset();
     m_viewInitialized = m_hasDisplayDomain && m_displayEndHz > m_displayStartHz;
     m_viewStartHz = m_displayStartHz;
     m_viewEndHz = m_displayEndHz;
@@ -578,7 +604,9 @@ void SpectrumWidget::submitRenderRequest(bool interactivePreview)
     if (plot.width() <= 0.0 || plot.height() <= 0.0) return;
 
     SpectrumRenderRequest request;
-    request.snapshot = m_snapshot;
+    // Zoom, resize and trace toggles must also reuse the raw-frame identity after
+    // a detection-only publication, otherwise the worker accumulates it again.
+    request.snapshot = m_renderSnapshot;
     request.requestId = ++m_nextRenderRequestId;
     request.generation = m_renderGeneration;
     request.viewStartHz = m_viewInitialized
@@ -677,7 +705,9 @@ void SpectrumWidget::drawDetectionMarkers(Direct2DChartRenderer& renderer,
                                           const QRectF& plot,
                                           double viewStartHz, double viewEndHz) const
 {
-    if (!m_showDetectionMarkers || !m_snapshot) return;
+    if (!m_showDetectionMarkers || !m_snapshot ||
+        (m_snapshot->detection.stage != algorithm::DetectionStage::Accumulating &&
+         m_snapshot->detection.stage != algorithm::DetectionStage::Completed)) return;
     const double viewWidthHz = std::max(1.0, viewEndHz - viewStartHz);
     const double fullStartHz = m_snapshot->frame.startFrequencyHz;
     const double fullEndHz = m_snapshot->frame.endFrequencyHz();
@@ -687,8 +717,7 @@ void SpectrumWidget::drawDetectionMarkers(Direct2DChartRenderer& renderer,
         const double endHz = std::min({detection.endFrequencyHz, fullEndHz, viewEndHz});
         if (!(endHz > startHz)) continue;
 
-        const QColor color = detection.confidence >= 0.9F
-            ? QColor(230, 62, 62) : QColor(255, 186, 0);
+        const QColor color(10, 140, 254);
         const qreal left = plot.left() + plot.width() * (startHz - viewStartHz) / viewWidthHz;
         const qreal right = plot.left() + plot.width() * (endHz - viewStartHz) / viewWidthHz;
         QRectF marker(left, plot.top() + 5.0,

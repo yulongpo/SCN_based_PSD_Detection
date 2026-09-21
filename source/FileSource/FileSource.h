@@ -54,6 +54,9 @@ public:
     void stop() override;
     bool read(algorithm::SpectrumFrame& frame) override;
     bool isLive() const noexcept override { return false; }
+    bool seekFrame(std::size_t frameIndex, std::string& error);
+    std::size_t frameCount() const noexcept;
+    std::size_t position() const noexcept { return m_frameIndex; }
 
 private:
     bool loadTextValues(const std::string& path, std::string& error);
@@ -71,6 +74,7 @@ private:
     std::size_t m_textOffset = 0;
     std::size_t m_frameLength = 0;
     std::uint64_t m_sequence = 0;
+    std::size_t m_frameIndex = 0;
     bool m_textFile = false;
     std::size_t m_binaryFrameCount = 0;
     std::size_t m_binaryTrailingBytes = 0;

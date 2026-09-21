@@ -443,6 +443,27 @@ void WaterfallWidget::ensureImage()
 void WaterfallWidget::setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
 {
     if (!snapshot || !snapshot->frame.isValid()) return;
+    if (m_snapshot && m_snapshot->detection.generation != snapshot->detection.generation) {
+        clear();
+    }
+    if (m_snapshot) {
+        const auto& previous = m_snapshot->frame;
+        const auto& next = snapshot->frame;
+        const bool sameFrame = m_snapshot->detection.generation == snapshot->detection.generation &&
+            previous.sequence == next.sequence && previous.timestampNs == next.timestampNs &&
+            previous.sourceName == next.sourceName &&
+            previous.startFrequencyHz == next.startFrequencyHz && previous.binWidthHz == next.binWidthHz &&
+            previous.resolutionBandwidthHz == next.resolutionBandwidthHz &&
+            (previous.referenceLevelDbm == next.referenceLevelDbm ||
+             (std::isnan(previous.referenceLevelDbm) && std::isnan(next.referenceLevelDbm))) &&
+            previous.powerDb.size() == next.powerDb.size() &&
+            std::memcmp(previous.powerDb.data(), next.powerDb.data(),
+                        next.powerDb.size() * sizeof(float)) == 0;
+        if (sameFrame) {
+            m_snapshot = snapshot;
+            return; // Detection/status publication does not add a waterfall row.
+        }
+    }
 
     ensureImage();
     const auto& frame = snapshot->frame;

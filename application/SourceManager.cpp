@@ -1,4 +1,5 @@
 #include "SourceManager.h"
+#include "../source/FileSource/FileSource.h"
 
 #include <utility>
 
@@ -36,6 +37,12 @@ void SourceManager::stop()
 bool SourceManager::read(algorithm::SpectrumFrame& frame)
 {
     return m_source && m_source->read(frame);
+}
+
+bool SourceManager::atFileEnd() const
+{
+    const auto* file = dynamic_cast<const source::FileSource*>(m_source.get());
+    return file && file->position() >= file->frameCount();
 }
 
 } // namespace scn::application

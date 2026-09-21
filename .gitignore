@@ -9,3 +9,15 @@ CMakeUserPresets.json
 *.pdb
 *.obj
 *.ipch
+
+# Local inference models and vendor/runtime binaries (never source artifacts)
+*.engine
+*.plan
+*.onnx
+*.dll
+*.lib
+*.so
+*.so.*
+*.dylib
+*.a
+*.exe

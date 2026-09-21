@@ -103,3 +103,4 @@ endif()
 install(TARGETS HaiAISpecMonitor
     RUNTIME DESTINATION bin
 )
+scn_deploy_detection_runtime(HaiAISpecMonitor)

@@ -16,6 +16,8 @@ set(SCN_BB60C_SDK_ROOT
     "D:/project/isa2/3rdparty/bb_series"
     CACHE PATH "Signal Hound BB API SDK root")
 
+include(cmake/ScnTensorRT.cmake)
+
 find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Widgets)
 
 add_library(scn_project_options INTERFACE)

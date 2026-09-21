@@ -13,6 +13,10 @@
 
 #include <QMainWindow>
 #include <QPoint>
+#include <QElapsedTimer>
+
+#include <optional>
+#include <tuple>
 
 class QCheckBox;
 class QCloseEvent;
@@ -81,7 +85,13 @@ private:
     void loadUiState();
     void saveUiState() const;
     bool applyCurrentConfiguration();
-    void clearMonitoringDisplay();
+    bool applyDetectionConfiguration();
+    void clearDetectionDisplay();
+    void clearMonitoringDisplay(bool discardCurrentGeneration = true);
+    void updateDetectionStatus(const algorithm::DisplaySnapshot* snapshot);
+    void updateSignalTable(const algorithm::DisplaySnapshot& snapshot);
+    QString formatDetectionTime(std::int64_t timestampNs, bool fileSource) const;
+    QString signalDetails(const algorithm::DetectedSignal& signal, bool fileSource) const;
     source::SourceConfig currentConfig() const;
     bool validateConfiguration(const source::SourceConfig& config, QString& error) const;
     QString formatFrequency(double hz, int decimals = 3) const;
@@ -120,6 +130,7 @@ private:
     QPushButton* m_pauseButton = nullptr;
     QLabel* m_stateLabel = nullptr;
     QLabel* m_frameLabel = nullptr;
+    QLabel* m_detectionStatusLabel = nullptr;
     QLabel* m_criticalAlertLabel = nullptr;
     QLabel* m_generalAlarmLabel = nullptr;
     QLabel* m_signalTotalLabel = nullptr;
@@ -134,9 +145,20 @@ private:
     QTimer* m_statusTimer = nullptr;
     QTimer* m_displayTimer = nullptr;
     algorithm::DisplaySnapshotPtr m_pendingSnapshot;
+    algorithm::DisplaySnapshotPtr m_displaySnapshot;
+    std::optional<algorithm::DetectionConfig> m_appliedDetectionConfig;
+    using DetectionKey = std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
+                                    algorithm::DetectionStage>;
+    std::optional<DetectionKey> m_lastDetectionKey;
+    QString m_detectionModelStatus;
+    std::uint64_t m_latestGeneration = 0;
+    std::uint64_t m_minimumGeneration = 0;
+    std::int64_t m_timeOriginNs = 0;
+    QElapsedTimer m_displayRateTimer;
+    std::uint64_t m_displayRateFrames = 0;
+    double m_displayRateHz = 0;
 
     bool m_monitoring = false;
-    bool m_waitingForNewRun = false;
     bool m_dragging = false;
     bool m_updatingFrequency = false;
     bool m_fileFrequencyMetadataLocked = false;

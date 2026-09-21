@@ -16,6 +16,10 @@
         "CMAKE_PREFIX_PATH": "D:/softwares/Qt/6.11.1/msvc2022_64",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
         "SCN_BB60C_SDK_ROOT": "D:/project/isa2/3rdparty/bb_series",
+        "SCN_ENABLE_TENSORRT": "ON",
+        "SCN_TENSORRT_ROOT": "D:/project/isa/submodules/HaiSignal/3rdparty/tensorrt",
+        "SCN_MODEL_SOURCE": "D:/project/isa/bin/models/scn_model.engine",
+        "CUDAToolkit_ROOT": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4",
         "SCN_BUILD_TESTS": "ON",
         "SCN_BUILD_DETECTION_LAB": "ON"
       }
@@ -30,6 +34,10 @@
         "CMAKE_PREFIX_PATH": "D:/softwares/Qt/6.11.1/msvc2022_64",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
         "SCN_BB60C_SDK_ROOT": "D:/project/isa2/3rdparty/bb_series",
+        "SCN_ENABLE_TENSORRT": "ON",
+        "SCN_TENSORRT_ROOT": "D:/project/isa/submodules/HaiSignal/3rdparty/tensorrt",
+        "SCN_MODEL_SOURCE": "D:/project/isa/bin/models/scn_model.engine",
+        "CUDAToolkit_ROOT": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4",
         "SCN_BUILD_TESTS": "ON",
         "SCN_BUILD_DETECTION_LAB": "ON"
       }

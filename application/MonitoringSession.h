@@ -2,6 +2,7 @@
 
 #include "../algorithm/types/DisplayTypes.h"
 #include "../source/SourceConfig.h"
+#include "../algorithm/DetectionConfig.h"
 
 #include <QThread>
 #include <QObject>
@@ -14,6 +15,7 @@ namespace scn::application
 {
 
 class SessionWorker;
+class SessionPipeline;
 
 class MonitoringSession final : public QObject
 {
@@ -28,11 +30,13 @@ public:
     void pause();
     void resume();
     void stop();
+    algorithm::ConfigApplyResult configureDetection(const algorithm::DetectionConfig& config);
 
 signals:
     void snapshotReady(const algorithm::DisplaySnapshotPtr& snapshot);
     void stateChanged(const QString& state);
     void errorOccurred(const QString& message);
+    void detectionStatusChanged(const QString& message);
     void deviceStatusChanged(const QString& device,
                              const QString& status,
                              bool connected);
@@ -40,6 +44,9 @@ signals:
 private:
     QThread m_workerThread;
     SessionWorker* m_worker = nullptr;
+    std::unique_ptr<SessionPipeline> m_pipeline;
+    std::uint64_t m_publishedRevision = 0;
+    void publishLatest();
 };
 
 } // namespace scn::application

@@ -73,7 +73,7 @@ bool FileSource::inspectFile(const std::string& path,
         return false;
     }
 
-    const std::filesystem::path filePath(path);
+    const std::filesystem::path filePath = std::filesystem::u8path(path);
     std::error_code statusError;
     if (!std::filesystem::exists(filePath, statusError) ||
         !std::filesystem::is_regular_file(filePath, statusError)) {
@@ -131,13 +131,14 @@ bool FileSource::open(const SourceConfig& config, std::string& error)
     m_frameBuffer.clear();
     m_textOffset = 0;
     m_sequence = 0;
+    m_frameIndex = 0;
     m_binaryFrameCount = 0;
     m_binaryTrailingBytes = 0;
     m_config = config;
 
     if (!inspectFile(config.filePath, m_metadata, error)) return false;
 
-    const std::filesystem::path filePath(config.filePath);
+    const std::filesystem::path filePath = std::filesystem::u8path(config.filePath);
     const std::string extension = lowerExtension(filePath);
     m_textFile = extension == ".txt" || extension == ".csv" || extension == ".asc";
 
@@ -168,7 +169,7 @@ bool FileSource::open(const SourceConfig& config, std::string& error)
             static_cast<std::uint64_t>(m_frameLength) * sizeof(float);
         m_binaryFrameCount = static_cast<std::size_t>(m_metadata.fileSizeBytes / frameBytes);
         m_binaryTrailingBytes = static_cast<std::size_t>(m_metadata.fileSizeBytes % frameBytes);
-        m_binaryInput.open(config.filePath, std::ios::binary);
+        m_binaryInput.open(std::filesystem::u8path(config.filePath), std::ios::binary);
         if (!m_binaryInput.is_open()) {
             error = "Unable to open binary spectrum file: " + config.filePath;
             return false;
@@ -202,7 +203,7 @@ void FileSource::stop()
 
 bool FileSource::loadTextValues(const std::string& path, std::string& error)
 {
-    std::ifstream input(path);
+    std::ifstream input(std::filesystem::u8path(path));
     if (!input.is_open()) {
         error = "Unable to open text spectrum file: " + path;
         return false;
@@ -229,6 +230,7 @@ bool FileSource::rewindBinary()
     if (!m_binaryInput.is_open()) return false;
     m_binaryInput.clear();
     m_binaryInput.seekg(0, std::ios::beg);
+    m_frameIndex = 0;
     return static_cast<bool>(m_binaryInput);
 }
 
@@ -255,6 +257,7 @@ bool FileSource::readOneFrame(std::vector<float>& values)
         if (readTextFrame(values)) return true;
         if (!m_config.loopFile) return false;
         m_textOffset = 0;
+        m_frameIndex = 0;
         return readTextFrame(values);
     }
 
@@ -275,8 +278,9 @@ bool FileSource::read(algorithm::SpectrumFrame& frame)
     const double bandwidthHz = m_config.bandwidthHz;
     frame = {};
     frame.sequence = ++m_sequence;
-    frame.timestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count();
+    // DAT has no per-frame timestamps: replay time must not depend on GPU speed.
+    frame.timestampNs = static_cast<std::int64_t>(
+        static_cast<long double>(m_frameIndex++) * 1000000000.0L / std::max(1, m_config.frameRateHz));
     frame.startFrequencyHz = centerFrequencyHz - bandwidthHz / 2.0;
     frame.binWidthHz = bandwidthHz / static_cast<double>(m_frameLength);
     frame.resolutionBandwidthHz = m_config.resolutionBandwidthHz;
@@ -289,6 +293,30 @@ bool FileSource::read(algorithm::SpectrumFrame& frame)
 void FileSource::closeFile()
 {
     if (m_binaryInput.is_open()) m_binaryInput.close();
+}
+
+std::size_t FileSource::frameCount() const noexcept
+{
+    return m_textFile ? (m_frameLength ? m_textValues.size() / m_frameLength : 0) : m_binaryFrameCount;
+}
+
+bool FileSource::seekFrame(std::size_t frameIndex, std::string& error)
+{
+    if (!m_frameLength || frameIndex >= frameCount()) {
+        error = "Replay frame index is outside complete file frames."; return false;
+    }
+    if (m_textFile) m_textOffset = frameIndex * m_frameLength;
+    else {
+        m_binaryInput.clear();
+        const auto offset = static_cast<std::uint64_t>(frameIndex) * m_frameLength * sizeof(float);
+        if (offset > static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+            error = "Replay byte offset exceeds stream limits."; return false;
+        }
+        m_binaryInput.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+        if (!m_binaryInput) { error = "Unable to seek spectrum file."; return false; }
+    }
+    m_frameIndex = frameIndex; m_sequence = 0; error.clear();
+    return true;
 }
 
 } // namespace scn::source
