@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -27,7 +28,12 @@ struct SpectrumFrame
 
     [[nodiscard]] bool isValid() const noexcept
     {
-        return !powerDb.empty() && binWidthHz > 0.0;
+        if (powerDb.empty() || !std::isfinite(startFrequencyHz) ||
+            !std::isfinite(binWidthHz) || binWidthHz <= 0.0) {
+            return false;
+        }
+        const double endFrequency = endFrequencyHz();
+        return std::isfinite(endFrequency) && endFrequency > startFrequencyHz;
     }
 
     [[nodiscard]] double endFrequencyHz() const noexcept

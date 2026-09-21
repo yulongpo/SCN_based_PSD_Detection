@@ -129,8 +129,15 @@ StatusBarWidget::StatusBarWidget(QWidget* parent)
     layout->addWidget(statusLabel(QStringLiteral("采集设备:"), this, QStringLiteral("statusLabel"), QStringLiteral("#606D79")));
     m_deviceValue = statusLabel(QStringLiteral("BB60C"), this, QStringLiteral("statusValue"), QStringLiteral("#2CA25B"));
     layout->addWidget(m_deviceValue);
+    layout->addWidget(statusLabel(QStringLiteral("BB60C接入:"), this, QStringLiteral("statusLabel"), QStringLiteral("#606D79")));
+    m_bb60cStatus = statusLabel(QStringLiteral("未连接"), this, QStringLiteral("statusValue"), QStringLiteral("#9AA6B2"));
+    layout->addWidget(m_bb60cStatus);
+    layout->addWidget(statusLabel(QStringLiteral("海得罗捷接入:"), this, QStringLiteral("statusLabel"), QStringLiteral("#606D79")));
+    m_harogicStatus = statusLabel(QStringLiteral("未接入"), this, QStringLiteral("statusValue"), QStringLiteral("#9AA6B2"));
+    layout->addWidget(m_harogicStatus);
     layout->addWidget(statusLabel(QStringLiteral("设备状态:"), this, QStringLiteral("statusLabel"), QStringLiteral("#606D79")));
-    layout->addWidget(statusLabel(QStringLiteral("已连接"), this, QStringLiteral("statusValue"), QStringLiteral("#2CA25B")));
+    m_deviceStatus = statusLabel(QStringLiteral("未连接"), this, QStringLiteral("statusValue"), QStringLiteral("#9AA6B2"));
+    layout->addWidget(m_deviceStatus);
     layout->addWidget(statusLabel(QStringLiteral("网络接入:"), this, QStringLiteral("statusLabel"), QStringLiteral("#606D79")));
     layout->addWidget(statusLabel(QStringLiteral("正常"), this, QStringLiteral("statusValue"), QStringLiteral("#2CA25B")));
     layout->addWidget(statusLabel(QStringLiteral("自检结果:"), this, QStringLiteral("statusLabel"), QStringLiteral("#606D79")));
@@ -156,6 +163,43 @@ void StatusBarWidget::setMenuInfoVisible(bool visible)
 void StatusBarWidget::setDeviceValue(const QString& value)
 {
     m_deviceValue->setText(value);
+    if (value.compare(QStringLiteral("BB60C"), Qt::CaseInsensitive) == 0) {
+        setDeviceConnectionStatus(QStringLiteral("BB60C"), m_bb60cStatus->text(),
+                                  m_bb60cStatus->text() == QStringLiteral("已连接"));
+    } else if (value.contains(QStringLiteral("海得罗捷")) ||
+               value.compare(QStringLiteral("Harogic"), Qt::CaseInsensitive) == 0) {
+        setDeviceConnectionStatus(QStringLiteral("海得罗捷"), m_harogicStatus->text(),
+                                  m_harogicStatus->text() == QStringLiteral("已连接"));
+    } else if (m_deviceStatus) {
+        m_deviceStatus->setText(QStringLiteral("未连接"));
+        m_deviceStatus->setStyleSheet(QStringLiteral("color:#9AA6B2; background:transparent; border:0;"));
+    }
+}
+
+void StatusBarWidget::setDeviceConnectionStatus(const QString& device,
+                                                const QString& status,
+                                                bool connected)
+{
+    QLabel* target = nullptr;
+    if (device.compare(QStringLiteral("BB60C"), Qt::CaseInsensitive) == 0) {
+        target = m_bb60cStatus;
+    } else if (device.contains(QStringLiteral("海得罗捷")) ||
+               device.compare(QStringLiteral("Harogic"), Qt::CaseInsensitive) == 0) {
+        target = m_harogicStatus;
+    }
+    if (!target) return;
+
+    const QString color = connected ? QStringLiteral("#2CA25B") : QStringLiteral("#9AA6B2");
+    target->setText(status);
+    target->setStyleSheet(QStringLiteral("color:%1; background:transparent; border:0;").arg(color));
+    if (m_deviceValue && m_deviceStatus &&
+        ((device.compare(QStringLiteral("BB60C"), Qt::CaseInsensitive) == 0 &&
+          m_deviceValue->text().compare(QStringLiteral("BB60C"), Qt::CaseInsensitive) == 0) ||
+         (device.contains(QStringLiteral("海得罗捷")) &&
+          m_deviceValue->text().compare(QStringLiteral("Harogic"), Qt::CaseInsensitive) == 0))) {
+        m_deviceStatus->setText(status);
+        m_deviceStatus->setStyleSheet(QStringLiteral("color:%1; background:transparent; border:0;").arg(color));
+    }
 }
 
 void StatusBarWidget::setTime(const QString& value)

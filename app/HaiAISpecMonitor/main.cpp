@@ -10,6 +10,8 @@
 int main(int argc, char* argv[])
 {
     QApplication application(argc, argv);
+    QApplication::setOrganizationName(QStringLiteral("SCN"));
+    QApplication::setOrganizationDomain(QStringLiteral("scn.local"));
     QApplication::setApplicationName(QStringLiteral("HaiAISpecMonitor"));
     QApplication::setApplicationVersion(QStringLiteral("0.1.0"));
     QApplication::setStyle(QStyleFactory::create(QStringLiteral("Fusion")));

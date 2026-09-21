@@ -15,6 +15,7 @@
       "cacheVariables": {
         "CMAKE_PREFIX_PATH": "D:/softwares/Qt/6.11.1/msvc2022_64",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "SCN_BB60C_SDK_ROOT": "D:/project/isa2/3rdparty/bb_series",
         "SCN_BUILD_TESTS": "ON",
         "SCN_BUILD_DETECTION_LAB": "ON"
       }
@@ -28,6 +29,7 @@
       "cacheVariables": {
         "CMAKE_PREFIX_PATH": "D:/softwares/Qt/6.11.1/msvc2022_64",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/out/install/${presetName}",
+        "SCN_BB60C_SDK_ROOT": "D:/project/isa2/3rdparty/bb_series",
         "SCN_BUILD_TESTS": "ON",
         "SCN_BUILD_DETECTION_LAB": "ON"
       }

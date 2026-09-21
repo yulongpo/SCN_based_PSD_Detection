@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../algorithm/types/DisplayTypes.h"
+#include "Direct2DChartRenderer.h"
 
 #include <QImage>
 #include <QPoint>
@@ -13,6 +14,8 @@
 #include <cstdint>
 #include <memory>
 #include <vector>
+
+class QPaintEngine;
 
 namespace scn::app
 {
@@ -29,6 +32,7 @@ public:
 
 public slots:
     void setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot);
+    void setDisplayDomain(double startHz, double endHz, double referenceLevelDbm);
     void setFrequencyView(double startHz, double endHz);
     void setSelectedFrequency(double frequencyHz);
     void resetView();
@@ -40,6 +44,8 @@ public slots:
                              bool interactivePreview,
                              std::size_t historyCount,
                              std::uint64_t frameSequence,
+                             double displayMinDb,
+                             double displayMaxDb,
                              QImage image);
 
 signals:
@@ -47,6 +53,7 @@ signals:
     void frequencySelected(double frequencyHz);
 
 protected:
+    QPaintEngine* paintEngine() const override;
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
@@ -89,10 +96,18 @@ private:
     int m_renderedImageHeight = 0;
     std::size_t m_renderedHistoryCount = 0;
     std::uint64_t m_renderedFrameSequence = 0;
+    double m_renderedDisplayMinDb = -120.0;
+    double m_renderedDisplayMaxDb = 0.0;
     bool m_renderedInteractivePreview = false;
     QTimer* m_renderSettleTimer = nullptr;
+    Direct2DChartRenderer m_direct2D;
     double m_viewStartHz = 0.0;
     double m_viewEndHz = 0.0;
+    double m_displayStartHz = 0.0;
+    double m_displayEndHz = 0.0;
+    double m_displayMaxDb = 0.0;
+    double m_displayMinDb = -100.0;
+    bool m_hasDisplayDomain = false;
     double m_selectedFrequencyHz = 0.0;
     bool m_viewInitialized = false;
     bool m_manualView = false;

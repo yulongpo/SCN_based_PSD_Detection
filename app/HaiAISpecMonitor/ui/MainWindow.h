@@ -25,6 +25,7 @@ class QMouseEvent;
 class QPushButton;
 class QSpinBox;
 class QStackedWidget;
+class QSplitter;
 class QTableWidget;
 class QTimer;
 
@@ -73,10 +74,16 @@ private:
     void buildMenus();
     void applyTheme();
     void updateSourceControls();
+    void updateDisplayDomain();
     void updateButtonState(const QString& state);
     void updateMonitorMetrics(const algorithm::DisplaySnapshot& snapshot);
     void applyFileMetadata(const QString& path);
+    void loadUiState();
+    void saveUiState() const;
+    bool applyCurrentConfiguration();
+    void clearMonitoringDisplay();
     source::SourceConfig currentConfig() const;
+    bool validateConfiguration(const source::SourceConfig& config, QString& error) const;
     QString formatFrequency(double hz, int decimals = 3) const;
 
     application::MonitoringSession& m_session;
@@ -95,12 +102,16 @@ private:
     QWidget* m_monitorPage = nullptr;
 
     QComboBox* m_sourceCombo = nullptr;
+    QStackedWidget* m_sourceFields = nullptr;
     QLineEdit* m_filePath = nullptr;
     QPushButton* m_browseButton = nullptr;
+    QDoubleSpinBox* m_centerFrequency = nullptr;
+    QDoubleSpinBox* m_bandwidth = nullptr;
     QDoubleSpinBox* m_startFrequency = nullptr;
     QDoubleSpinBox* m_endFrequency = nullptr;
     QDoubleSpinBox* m_resolutionBandwidth = nullptr;
     QDoubleSpinBox* m_referenceLevel = nullptr;
+    QComboBox* m_rbwShape = nullptr;
     QSpinBox* m_pointCount = nullptr;
     QSpinBox* m_frameRate = nullptr;
     QCheckBox* m_loopFile = nullptr;
@@ -112,7 +123,9 @@ private:
     QLabel* m_criticalAlertLabel = nullptr;
     QLabel* m_generalAlarmLabel = nullptr;
     QLabel* m_signalTotalLabel = nullptr;
+    QLabel* m_rbwShapeLabel = nullptr;
     StatusBarWidget* m_statusStrip = nullptr;
+    QSplitter* m_plotSplitter = nullptr;
     SpectrumWidget* m_spectrum = nullptr;
     WaterfallWidget* m_waterfall = nullptr;
     QTableWidget* m_signalTable = nullptr;
@@ -123,7 +136,12 @@ private:
     algorithm::DisplaySnapshotPtr m_pendingSnapshot;
 
     bool m_monitoring = false;
+    bool m_waitingForNewRun = false;
     bool m_dragging = false;
+    bool m_updatingFrequency = false;
+    bool m_fileFrequencyMetadataLocked = false;
+    bool m_fileRbwMetadataLocked = false;
+    bool m_fileReferenceMetadataLocked = false;
     QPoint m_dragOffset;
 };
 

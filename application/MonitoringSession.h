@@ -33,6 +33,9 @@ signals:
     void snapshotReady(const algorithm::DisplaySnapshotPtr& snapshot);
     void stateChanged(const QString& state);
     void errorOccurred(const QString& message);
+    void deviceStatusChanged(const QString& device,
+                             const QString& status,
+                             bool connected);
 
 private:
     QThread m_workerThread;

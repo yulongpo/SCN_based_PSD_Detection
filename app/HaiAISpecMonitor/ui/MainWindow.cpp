@@ -7,6 +7,7 @@
 #include <QCheckBox>
 #include <QCloseEvent>
 #include <QComboBox>
+#include <QColor>
 #include <QDateTime>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
@@ -24,14 +25,17 @@
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QSplitter>
+#include <QSettings>
 #include <QStackedWidget>
 #include <QStyle>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTimer>
 #include <QVBoxLayout>
+#include <QValidator>
 
 #include <algorithm>
+#include <cmath>
 
 namespace scn::app
 {
@@ -48,33 +52,79 @@ public:
     }
 
 protected:
+    static bool parseFrequencyText(const QString& text, double& result)
+    {
+        QString value = text.simplified();
+        value.remove(QLatin1Char(' '));
+        if (value.isEmpty()) return false;
+
+        QString lower = value.toLower();
+        double multiplier = 1.0;
+        const auto stripSuffix = [&lower, &value](const QString& suffix) {
+            lower.chop(suffix.size());
+            value.chop(suffix.size());
+        };
+
+        // ISA-style input accepts both full units and their one-letter
+        // abbreviations.  Matching is deliberately case-insensitive.
+        if (lower.endsWith(QStringLiteral("ghz"))) {
+            stripSuffix(QStringLiteral("ghz"));
+            multiplier = 1e9;
+        } else if (lower.endsWith(QStringLiteral("mhz"))) {
+            stripSuffix(QStringLiteral("mhz"));
+            multiplier = 1e6;
+        } else if (lower.endsWith(QStringLiteral("khz"))) {
+            stripSuffix(QStringLiteral("khz"));
+            multiplier = 1e3;
+        } else if (lower.endsWith(QStringLiteral("hz"))) {
+            stripSuffix(QStringLiteral("hz"));
+        } else if (lower.endsWith(QLatin1Char('g'))) {
+            stripSuffix(QStringLiteral("g"));
+            multiplier = 1e9;
+        } else if (lower.endsWith(QLatin1Char('m'))) {
+            stripSuffix(QStringLiteral("m"));
+            multiplier = 1e6;
+        } else if (lower.endsWith(QLatin1Char('k'))) {
+            stripSuffix(QStringLiteral("k"));
+            multiplier = 1e3;
+        } else if (lower.endsWith(QLatin1Char('h'))) {
+            stripSuffix(QStringLiteral("h"));
+        }
+
+        bool ok = false;
+        const double numeric = value.toDouble(&ok);
+        if (!ok || !std::isfinite(numeric)) return false;
+        result = numeric * multiplier;
+        return std::isfinite(result);
+    }
+
     QString textFromValue(double value) const override
     {
-        const double hz = value * 1e9;
-        if (std::abs(hz) >= 1e9)
-            return QStringLiteral("%1 GHz").arg(hz / 1e9, 0, 'f', 9);
-        if (std::abs(hz) >= 1e6)
-            return QStringLiteral("%1 MHz").arg(hz / 1e6, 0, 'f', 6);
-        return QStringLiteral("%1 kHz").arg(hz / 1e3, 0, 'f', 3);
+        const double absHz = std::abs(value);
+        if (absHz >= 1e9)
+            return QStringLiteral("%1 GHz").arg(value / 1e9, 0, 'f', 9);
+        if (absHz >= 1e6)
+            return QStringLiteral("%1 MHz").arg(value / 1e6, 0, 'f', 6);
+        if (absHz >= 1e3)
+            return QStringLiteral("%1 kHz").arg(value / 1e3, 0, 'f', 3);
+        return QStringLiteral("%1 Hz").arg(value, 0, 'f', 0);
     }
 
     double valueFromText(const QString& text) const override
     {
-        QString value = text.trimmed();
-        double multiplier = 1e9;
-        if (value.endsWith(QStringLiteral("GHz"), Qt::CaseInsensitive)) {
-            value.chop(3);
-            multiplier = 1e9;
-        } else if (value.endsWith(QStringLiteral("MHz"), Qt::CaseInsensitive)) {
-            value.chop(3);
-            multiplier = 1e6;
-        } else if (value.endsWith(QStringLiteral("kHz"), Qt::CaseInsensitive)) {
-            value.chop(3);
-            multiplier = 1e3;
-        }
-        bool ok = false;
-        const double numeric = value.trimmed().toDouble(&ok);
-        return ok ? numeric * multiplier / 1e9 : QDoubleSpinBox::value();
+        double result = 0.0;
+        return parseFrequencyText(text, result) ? result : QDoubleSpinBox::value();
+    }
+
+    QValidator::State validate(QString& input, int& position) const override
+    {
+        Q_UNUSED(position)
+        if (input.trimmed().isEmpty()) return QValidator::Intermediate;
+
+        double result = 0.0;
+        if (!parseFrequencyText(input, result)) return QValidator::Invalid;
+        return result >= minimum() && result <= maximum()
+            ? QValidator::Acceptable : QValidator::Invalid;
     }
 };
 
@@ -108,24 +158,39 @@ QWidget* metricCard(const QString& iconPath, const QString& title, const QString
 {
     auto* card = new QFrame(parent);
     card->setObjectName(QStringLiteral("metricCard"));
-    card->setMinimumWidth(138);
+    card->setMinimumSize(136, 76);
+    card->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    card->setToolTip(title);
+
     auto* layout = new QHBoxLayout(card);
-    layout->setContentsMargins(12, 8, 12, 8);
+    layout->setContentsMargins(10, 8, 12, 8);
+    layout->setSpacing(10);
+
+    const QColor accent(color);
+    const QString iconBackground = QStringLiteral("rgba(%1, %2, %3, 38)")
+                                       .arg(accent.red())
+                                       .arg(accent.green())
+                                       .arg(accent.blue());
     auto* iconLabel = new QLabel(card);
     iconLabel->setObjectName(QStringLiteral("metricIcon"));
-    iconLabel->setPixmap(QPixmap(iconPath).scaled(36, 36, Qt::KeepAspectRatio,
+    iconLabel->setPixmap(QPixmap(iconPath).scaled(24, 24, Qt::KeepAspectRatio,
                                                     Qt::SmoothTransformation));
-    iconLabel->setStyleSheet(QStringLiteral("background:%1; border-radius:7px;").arg(color));
+    iconLabel->setStyleSheet(QStringLiteral(
+        "background:%1; border:1px solid %2; border-radius:8px;").arg(iconBackground, color));
     iconLabel->setAlignment(Qt::AlignCenter);
-    iconLabel->setFixedSize(38, 38);
+    iconLabel->setFixedSize(40, 40);
+
     auto* textLayout = new QVBoxLayout;
-    textLayout->setContentsMargins(0, 0, 0, 0);
-    textLayout->setSpacing(0);
+    textLayout->setContentsMargins(0, 1, 0, 1);
+    textLayout->setSpacing(1);
     auto* titleLabel = new QLabel(title, card);
     titleLabel->setObjectName(QStringLiteral("metricTitle"));
+    titleLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
     value = new QLabel(QStringLiteral("0"), card);
     value->setObjectName(QStringLiteral("metricValue"));
     value->setStyleSheet(QStringLiteral("color:%1;").arg(color));
+    value->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+    value->setMinimumWidth(48);
     textLayout->addWidget(titleLabel);
     textLayout->addWidget(value);
     layout->addWidget(iconLabel);
@@ -138,6 +203,12 @@ QTableWidgetItem* tableItem(const QString& text)
     auto* result = new QTableWidgetItem(text);
     result->setTextAlignment(Qt::AlignCenter);
     return result;
+}
+
+QString defaultSpectrumFilePath()
+{
+    return QStringLiteral(
+        R"(D:\project\isa\bin\data\spectrum_data_org\20260911_152444_651_Fc=2025000000_Bw=3950000000_Rbw=50000_Reflevel=-20.0_SpectrumLen=202242.dat)");
 }
 }
 
@@ -168,6 +239,10 @@ MainWindow::MainWindow(application::MonitoringSession& session,
             &m_viewModel, &viewmodel::MonitorViewModel::acceptState);
     connect(&m_session, &application::MonitoringSession::errorOccurred,
             this, &MainWindow::onError);
+    connect(&m_session, &application::MonitoringSession::deviceStatusChanged,
+            this, [this](const QString& device, const QString& status, bool connected) {
+                m_statusStrip->setDeviceConnectionStatus(device, status, connected);
+            });
     connect(&m_viewModel, &viewmodel::MonitorViewModel::snapshotChanged,
             this, &MainWindow::onSnapshot);
     connect(&m_viewModel, &viewmodel::MonitorViewModel::stateChanged,
@@ -182,15 +257,11 @@ MainWindow::MainWindow(application::MonitoringSession& session,
             this, [this](const QString& message) {
                 statusBar()->showMessage(message, 4000);
             });
-    // ISA 中频谱图与瀑布图共享频率视图和选中标记；任一图上的操作都同步到另一幅图。
+    // ISA 中频谱图是频率视图的交互主控，瀑布图跟随同一范围和选中频点重算。
     connect(m_spectrum, &SpectrumWidget::viewRangeChanged,
             m_waterfall, &WaterfallWidget::setFrequencyView);
-    connect(m_waterfall, &WaterfallWidget::viewRangeChanged,
-            m_spectrum, &SpectrumWidget::setFrequencyView);
     connect(m_spectrum, &SpectrumWidget::frequencySelected,
             m_waterfall, &WaterfallWidget::setSelectedFrequency);
-    connect(m_waterfall, &WaterfallWidget::frequencySelected,
-            m_spectrum, &SpectrumWidget::setSelectedFrequency);
 
     m_statusTimer = new QTimer(this);
     m_statusTimer->setInterval(1000);
@@ -202,12 +273,9 @@ MainWindow::MainWindow(application::MonitoringSession& session,
     connect(m_displayTimer, &QTimer::timeout, this, &MainWindow::refreshDisplay);
     m_displayTimer->start();
 
-    const QString defaultSpectrumFile = QStringLiteral(
-        R"(D:\project\isa\bin\data\spectrum_data_org\20260911_152444_651_Fc=2025000000_Bw=3950000000_Rbw=50000_Reflevel=-20.0_SpectrumLen=202242.dat)");
-    m_sourceCombo->setCurrentIndex(2);
-    m_filePath->setText(defaultSpectrumFile);
-    applyFileMetadata(defaultSpectrumFile);
+    loadUiState();
     updateSourceControls();
+    updateDisplayDomain();
     applyConfiguration();
     updateRuntimeStatus();
 }
@@ -245,9 +313,16 @@ void MainWindow::applyTheme()
         QCheckBox::indicator { width: 16px; height: 16px; }
         QCheckBox::indicator:unchecked { background: #101a28; border: 1px solid #46617c; border-radius: 3px; }
         QCheckBox::indicator:checked { background: #0e8de2; border: 1px solid #33b9ff; border-radius: 3px; }
-        QLabel#metricIcon { border-radius: 7px; }
-        QLabel#metricTitle { color: #8b99a9; font-size: 11px; }
-        QLabel#metricValue { font-size: 24px; font-weight: 700; }
+        QFrame#metricCard { background: #0b0f18; border: 1px solid #253348; border-radius: 10px; }
+        QFrame#metricCard:hover { background: #101827; border-color: #3c628d; }
+        QFrame#controlDivider { background: #263242; border: none; }
+        QLabel#metricIcon { border-radius: 8px; }
+        QLabel#metricTitle { color: #a0afbf; font-size: 12px; font-weight: 600; }
+        QLabel#metricValue { font-size: 26px; font-weight: 700; }
+        QFrame#spectrumTraceToolbar { background: rgba(7,31,61,230); border: 1px solid #1a304b; border-radius: 6px; }
+        QPushButton#spectrumTraceButton { background: #071f3d; color: #d6ecff; border: 1px solid #1a304b; border-radius: 5px; padding: 0 8px; font-size: 11px; }
+        QPushButton#spectrumTraceButton:hover { border-color: #3d78ad; }
+        QPushButton#spectrumTraceButton:checked { background: #0a8cfe; border-color: #38b4ff; color: #ffffff; }
         QTableWidget#isaTable { background: #060610; alternate-background-color: #15151e; border: 1px solid #1e1e28; border-radius: 8px; gridline-color: #1e1e28; color: #c8c8c8; selection-background-color: #2c3e76; }
         QTableWidget#isaTable QHeaderView::section { background: #15151e; color: #a1a1a5; border: none; border-right: 1px solid #1e1e28; border-bottom: 1px solid #1e1e28; padding: 8px 4px; }
         QTableWidget#isaTable::item { padding: 6px; }
@@ -361,7 +436,8 @@ void MainWindow::buildMonitorPage()
     auto* plotLayout = new QVBoxLayout(plotPanel);
     plotLayout->setContentsMargins(1, 1, 1, 1);
     plotLayout->setSpacing(2);
-    auto* splitter = new QSplitter(Qt::Vertical, plotPanel);
+    m_plotSplitter = new QSplitter(Qt::Vertical, plotPanel);
+    auto* splitter = m_plotSplitter;
     m_waterfall = new WaterfallWidget(splitter);
     m_spectrum = new SpectrumWidget(splitter);
     m_waterfall->setMinimumHeight(135);
@@ -382,74 +458,156 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
 {
     auto* panel = new QFrame(parent);
     panel->setObjectName(QStringLiteral("controlPanel"));
-    panel->setMinimumHeight(82);
+    panel->setMinimumHeight(112);
     auto* layout = new QHBoxLayout(panel);
-    layout->setContentsMargins(12, 7, 12, 7);
-    layout->setSpacing(12);
+    layout->setContentsMargins(14, 8, 14, 8);
+    layout->setSpacing(16);
 
     auto* left = new QWidget(panel);
-    auto* grid = new QGridLayout(left);
-    grid->setContentsMargins(0, 0, 0, 0);
-    grid->setHorizontalSpacing(12);
-    grid->setVerticalSpacing(4);
+    auto* configGrid = new QGridLayout(left);
+    configGrid->setContentsMargins(0, 0, 0, 0);
+    configGrid->setHorizontalSpacing(10);
+    configGrid->setVerticalSpacing(6);
 
-    grid->addWidget(label(QStringLiteral("文件路径"), panel, QStringLiteral("controlLabel")), 0, 0);
-    m_filePath = new QLineEdit(panel);
+    auto* sourceLabel = label(QStringLiteral("数据源"), left, QStringLiteral("controlLabel"));
+    sourceLabel->setMinimumWidth(52);
+    configGrid->addWidget(sourceLabel, 0, 0);
+    m_sourceCombo = new QComboBox(left);
+    m_sourceCombo->addItem(QStringLiteral("BB60C"), static_cast<int>(algorithm::SourceKind::BB60C));
+    m_sourceCombo->addItem(QStringLiteral("Harogic"), static_cast<int>(algorithm::SourceKind::Harogic));
+    m_sourceCombo->addItem(QStringLiteral("FILE"), static_cast<int>(algorithm::SourceKind::File));
+    m_sourceCombo->setMinimumWidth(96);
+    configGrid->addWidget(m_sourceCombo, 0, 1);
+
+    m_sourceFields = new QStackedWidget(left);
+    m_sourceFields->setMinimumWidth(420);
+    m_sourceFields->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    auto* hardwarePage = new QWidget(m_sourceFields);
+    auto* hardwareLayout = new QHBoxLayout(hardwarePage);
+    hardwareLayout->setContentsMargins(0, 0, 0, 0);
+    hardwareLayout->setSpacing(8);
+    auto* centerLabel = label(QStringLiteral("中心频率"), hardwarePage, QStringLiteral("controlLabel"));
+    centerLabel->setMinimumWidth(64);
+    hardwareLayout->addWidget(centerLabel);
+    m_centerFrequency = new FrequencySpinBox(hardwarePage);
+    m_centerFrequency->setRange(0.0, 6.4e9);
+    m_centerFrequency->setDecimals(6);
+    m_centerFrequency->setValue(2.4e9);
+    m_centerFrequency->setMinimumWidth(150);
+    hardwareLayout->addWidget(m_centerFrequency, 1);
+    auto* bandwidthLabel = label(QStringLiteral("扫宽"), hardwarePage, QStringLiteral("controlLabel"));
+    bandwidthLabel->setMinimumWidth(36);
+    hardwareLayout->addWidget(bandwidthLabel);
+    m_bandwidth = new FrequencySpinBox(hardwarePage);
+    m_bandwidth->setRange(20.0, 6.4e9);
+    m_bandwidth->setDecimals(6);
+    m_bandwidth->setValue(100.0e6);
+    m_bandwidth->setMinimumWidth(150);
+    hardwareLayout->addWidget(m_bandwidth, 1);
+    hardwareLayout->addStretch(1);
+    m_sourceFields->addWidget(hardwarePage);
+
+    auto* filePage = new QWidget(m_sourceFields);
+    auto* fileLayout = new QHBoxLayout(filePage);
+    fileLayout->setContentsMargins(0, 0, 0, 0);
+    fileLayout->setSpacing(8);
+    auto* fileLabel = label(QStringLiteral("文件路径"), filePage, QStringLiteral("controlLabel"));
+    fileLabel->setMinimumWidth(52);
+    fileLayout->addWidget(fileLabel);
+    m_filePath = new QLineEdit(filePage);
     m_filePath->setPlaceholderText(QStringLiteral("请选择回放文件..."));
-    grid->addWidget(m_filePath, 0, 1, 1, 5);
-    m_browseButton = new QPushButton(panel);
+    m_filePath->setMinimumWidth(300);
+    m_filePath->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    fileLayout->addWidget(m_filePath, 1);
+    m_browseButton = new QPushButton(filePage);
     m_browseButton->setIcon(QIcon(QStringLiteral(":/button/folder.png")));
     m_browseButton->setIconSize(QSize(16, 16));
     m_browseButton->setObjectName(QStringLiteral("pageToolButton"));
     m_browseButton->setToolTip(QStringLiteral("选择频谱文件"));
     m_browseButton->setFixedSize(34, 30);
-    grid->addWidget(m_browseButton, 0, 6);
-    grid->addWidget(label(QStringLiteral("数据源"), panel, QStringLiteral("controlLabel")), 0, 7);
-    m_sourceCombo = new QComboBox(panel);
-    m_sourceCombo->addItem(QStringLiteral("BB60C"), static_cast<int>(algorithm::SourceKind::BB60C));
-    m_sourceCombo->addItem(QStringLiteral("Harogic"), static_cast<int>(algorithm::SourceKind::Harogic));
-    m_sourceCombo->addItem(QStringLiteral("FILE"), static_cast<int>(algorithm::SourceKind::File));
-    m_sourceCombo->setFixedWidth(92);
-    grid->addWidget(m_sourceCombo, 0, 8);
+    fileLayout->addWidget(m_browseButton);
+    m_sourceFields->addWidget(filePage);
+    configGrid->addWidget(m_sourceFields, 0, 2, 1, 5);
 
-    grid->addWidget(label(QStringLiteral("起始频率"), panel, QStringLiteral("controlLabel")), 1, 0);
-    m_startFrequency = new FrequencySpinBox(panel);
-    m_startFrequency->setRange(0.001, 100.0);
+    configGrid->addWidget(label(QStringLiteral("带宽分辨率"), left, QStringLiteral("controlLabel")), 0, 7);
+    m_resolutionBandwidth = new FrequencySpinBox(left);
+    m_resolutionBandwidth->setRange(0.602006912, 10.1e6);
+    m_resolutionBandwidth->setDecimals(6);
+    m_resolutionBandwidth->setValue(50.0e3);
+    m_resolutionBandwidth->setMinimumWidth(130);
+    configGrid->addWidget(m_resolutionBandwidth, 0, 8);
+
+    // ISA keeps start/stop frequency visible in both live and file modes.
+    // These controls use Hz internally and accept an explicit unit suffix.
+    configGrid->addWidget(label(QStringLiteral("起始频率"), left, QStringLiteral("controlLabel")), 1, 0);
+    m_startFrequency = new FrequencySpinBox(left);
+    m_startFrequency->setRange(0.0, 6.4e9);
     m_startFrequency->setDecimals(6);
-    m_startFrequency->setValue(2.35);
-    grid->addWidget(m_startFrequency, 1, 1);
-    grid->addWidget(label(QStringLiteral("终止频率"), panel, QStringLiteral("controlLabel")), 1, 2);
-    m_endFrequency = new FrequencySpinBox(panel);
-    m_endFrequency->setRange(0.002, 100.0);
+    m_startFrequency->setValue(2.35e9);
+    m_startFrequency->setMinimumWidth(150);
+    configGrid->addWidget(m_startFrequency, 1, 1);
+    configGrid->addWidget(label(QStringLiteral("终止频率"), left, QStringLiteral("controlLabel")), 1, 2);
+    m_endFrequency = new FrequencySpinBox(left);
+    m_endFrequency->setRange(0.0, 6.4e9);
     m_endFrequency->setDecimals(6);
-    m_endFrequency->setValue(2.45);
-    grid->addWidget(m_endFrequency, 1, 3);
-    grid->addWidget(label(QStringLiteral("带宽分辨率"), panel, QStringLiteral("controlLabel")), 1, 4);
-    m_resolutionBandwidth = new QDoubleSpinBox(panel);
-    m_resolutionBandwidth->setRange(0.001, 10000.0);
-    m_resolutionBandwidth->setDecimals(3);
-    m_resolutionBandwidth->setValue(50.0);
-    m_resolutionBandwidth->setSuffix(QStringLiteral(" kHz"));
-    grid->addWidget(m_resolutionBandwidth, 1, 5);
-    grid->addWidget(label(QStringLiteral("参考电平"), panel, QStringLiteral("controlLabel")), 1, 6);
-    m_referenceLevel = new QDoubleSpinBox(panel);
-    m_referenceLevel->setRange(-200.0, 30.0);
+    m_endFrequency->setValue(2.45e9);
+    m_endFrequency->setMinimumWidth(150);
+    configGrid->addWidget(m_endFrequency, 1, 3);
+
+    configGrid->addWidget(label(QStringLiteral("参考电平"), left, QStringLiteral("controlLabel")), 1, 4);
+    m_referenceLevel = new QDoubleSpinBox(left);
+    m_referenceLevel->setRange(-1000.0, 1000.0);
     m_referenceLevel->setDecimals(1);
     m_referenceLevel->setValue(-25.0);
     m_referenceLevel->setSuffix(QStringLiteral(" dBm"));
-    grid->addWidget(m_referenceLevel, 1, 7, 1, 2);
-    grid->setColumnStretch(1, 1);
-    grid->setColumnStretch(3, 1);
-    grid->setColumnStretch(5, 1);
+    m_referenceLevel->setMinimumWidth(120);
+    m_referenceLevel->setToolTip(QStringLiteral(
+        "用于自动增益/衰减控制；频谱图和瀑布图显示范围为参考电平以下100 dB"));
+    configGrid->addWidget(m_referenceLevel, 1, 5);
+    m_rbwShapeLabel = label(QStringLiteral("RBW窗口"), left, QStringLiteral("controlLabel"));
+    configGrid->addWidget(m_rbwShapeLabel, 1, 6);
+    m_rbwShape = new QComboBox(left);
+    m_rbwShape->addItem(QStringLiteral("Nuttall"), static_cast<int>(source::RbwShape::Nuttall));
+    m_rbwShape->addItem(QStringLiteral("Flattop"), static_cast<int>(source::RbwShape::Flattop));
+    m_rbwShape->addItem(QStringLiteral("CISPR"), static_cast<int>(source::RbwShape::Cispr));
+    m_rbwShape->setToolTip(QStringLiteral(
+        "BB60C RBW窗口：Nuttall速度优先，Flattop幅度精度优先，CISPR为6 dB截止"));
+    m_rbwShape->setMinimumWidth(130);
+    configGrid->addWidget(m_rbwShape, 1, 7);
+    configGrid->setColumnStretch(1, 1);
+    configGrid->setColumnStretch(3, 1);
+    configGrid->setColumnStretch(5, 1);
+    configGrid->setColumnStretch(8, 1);
     layout->addWidget(left, 1);
 
-    auto* operation = new QHBoxLayout;
-    operation->setContentsMargins(0, 0, 0, 0);
-    operation->setSpacing(8);
+    auto addDivider = [panel, layout]() {
+        auto* divider = new QFrame(panel);
+        divider->setObjectName(QStringLiteral("controlDivider"));
+        divider->setFrameShape(QFrame::VLine);
+        divider->setFrameShadow(QFrame::Plain);
+        divider->setFixedWidth(1);
+        layout->addWidget(divider);
+    };
+
+    addDivider();
+
+    // Middle block: lifecycle operations remain visually separate from the
+    // parameter grid and the alarm statistics.
+    auto* operationPanel = new QWidget(panel);
+    operationPanel->setMinimumWidth(260);
+    operationPanel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    auto* operationLayout = new QVBoxLayout(operationPanel);
+    operationLayout->setContentsMargins(0, 0, 0, 0);
+    operationLayout->setSpacing(8);
+    operationLayout->addStretch(1);
+
     m_applyButton = new QPushButton(QStringLiteral("应用参数"), panel);
     m_applyButton->setObjectName(QStringLiteral("pageToolButton"));
     m_applyButton->setVisible(false);
-    operation->addWidget(m_applyButton);
+    auto* operation = new QHBoxLayout;
+    operation->setContentsMargins(0, 0, 0, 0);
+    operation->setSpacing(8);
     m_startButton = new QPushButton(QStringLiteral("开始监测"), panel);
     m_startButton->setObjectName(QStringLiteral("primaryButton"));
     m_startButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
@@ -461,17 +619,30 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_pauseButton->setFixedSize(120, 40);
     m_pauseButton->setEnabled(false);
     operation->addWidget(m_pauseButton);
-    layout->addLayout(operation);
+    operation->addStretch(1);
+    operationLayout->addLayout(operation);
+    operationLayout->addStretch(1);
+    layout->addWidget(operationPanel, 0);
 
+    addDivider();
+
+    // Right block: three equal statistic cards form one aligned status area.
+    auto* metricsPanel = new QWidget(panel);
+    metricsPanel->setMinimumWidth(430);
+    metricsPanel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+    auto* metrics = new QHBoxLayout(metricsPanel);
+    metrics->setContentsMargins(0, 0, 0, 0);
+    metrics->setSpacing(8);
     auto* critical = metricCard(QStringLiteral(":/collect/critical_alert.png"), QStringLiteral("严重警告"),
-                                QStringLiteral("#E63E3E"), m_criticalAlertLabel, panel);
+                                QStringLiteral("#E63E3E"), m_criticalAlertLabel, metricsPanel);
     auto* general = metricCard(QStringLiteral(":/collect/general_alarm.png"), QStringLiteral("一般警告"),
-                               QStringLiteral("#FFBA00"), m_generalAlarmLabel, panel);
+                               QStringLiteral("#FFBA00"), m_generalAlarmLabel, metricsPanel);
     auto* total = metricCard(QStringLiteral(":/collect/signal_total.png"), QStringLiteral("信号总数"),
-                             QStringLiteral("#0A8CFE"), m_signalTotalLabel, panel);
-    layout->addWidget(critical);
-    layout->addWidget(general);
-    layout->addWidget(total);
+                             QStringLiteral("#0A8CFE"), m_signalTotalLabel, metricsPanel);
+    metrics->addWidget(critical, 1);
+    metrics->addWidget(general, 1);
+    metrics->addWidget(total, 1);
+    layout->addWidget(metricsPanel, 0);
 
     m_stateLabel = label(QStringLiteral("已停止"), panel, QStringLiteral("stateLabel"));
     m_stateLabel->setVisible(false);
@@ -499,6 +670,36 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     connect(m_applyButton, &QPushButton::clicked, this, &MainWindow::applyConfiguration);
     connect(m_startButton, &QPushButton::clicked, this, &MainWindow::startMonitoring);
     connect(m_pauseButton, &QPushButton::clicked, this, &MainWindow::pauseMonitoring);
+
+    const auto syncFromCenterSpan = [this](double) {
+        if (m_updatingFrequency) return;
+        m_updatingFrequency = true;
+        const double centerHz = m_centerFrequency->value();
+        const double spanHz = m_bandwidth->value();
+        m_startFrequency->setValue(centerHz - spanHz / 2.0);
+        m_endFrequency->setValue(centerHz + spanHz / 2.0);
+        m_updatingFrequency = false;
+    };
+    const auto syncFromStartEnd = [this](double) {
+        if (m_updatingFrequency) return;
+        m_updatingFrequency = true;
+        const double startHz = m_startFrequency->value();
+        const double endHz = m_endFrequency->value();
+        m_centerFrequency->setValue((startHz + endHz) / 2.0);
+        m_bandwidth->setValue(std::max(20.0, endHz - startHz));
+        m_updatingFrequency = false;
+    };
+    connect(m_centerFrequency, &QDoubleSpinBox::valueChanged, this, syncFromCenterSpan);
+    connect(m_bandwidth, &QDoubleSpinBox::valueChanged, this, syncFromCenterSpan);
+    connect(m_startFrequency, &QDoubleSpinBox::valueChanged, this, syncFromStartEnd);
+    connect(m_endFrequency, &QDoubleSpinBox::valueChanged, this, syncFromStartEnd);
+
+    connect(m_startFrequency, &QDoubleSpinBox::valueChanged,
+            this, [this](double) { updateDisplayDomain(); });
+    connect(m_endFrequency, &QDoubleSpinBox::valueChanged,
+            this, [this](double) { updateDisplayDomain(); });
+    connect(m_referenceLevel, &QDoubleSpinBox::valueChanged,
+            this, [this](double) { updateDisplayDomain(); });
 }
 
 void MainWindow::buildSignalTable(QWidget* parent)
@@ -544,12 +745,18 @@ source::SourceConfig MainWindow::currentConfig() const
     source::SourceConfig config;
     config.kind = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt());
     config.filePath = m_filePath->text().trimmed().toStdString();
-    const double startHz = m_startFrequency->value() * 1e9;
-    const double endHz = std::max(startHz + 1.0, m_endFrequency->value() * 1e9);
-    config.centerFrequencyHz = (startHz + endHz) / 2.0;
-    config.bandwidthHz = endHz - startHz;
-    config.resolutionBandwidthHz = m_resolutionBandwidth->value() * 1e3;
+    if (config.kind == algorithm::SourceKind::File) {
+        const double startHz = m_startFrequency->value();
+        const double endHz = m_endFrequency->value();
+        config.centerFrequencyHz = (startHz + endHz) / 2.0;
+        config.bandwidthHz = endHz - startHz;
+    } else {
+        config.centerFrequencyHz = m_centerFrequency->value();
+        config.bandwidthHz = std::max(20.0, m_bandwidth->value());
+    }
+    config.resolutionBandwidthHz = m_resolutionBandwidth->value();
     config.referenceLevelDbm = m_referenceLevel->value();
+    config.rbwShape = static_cast<source::RbwShape>(m_rbwShape->currentData().toInt());
     config.pointCount = static_cast<std::size_t>(m_pointCount->value());
     config.frameRateHz = m_frameRate->value();
     config.loopFile = m_loopFile->isChecked();
@@ -558,9 +765,58 @@ source::SourceConfig MainWindow::currentConfig() const
 
 QString MainWindow::formatFrequency(double hz, int decimals) const
 {
-    if (std::abs(hz) >= 1e9)
+    const double absHz = std::abs(hz);
+    if (absHz >= 1e9)
         return QStringLiteral("%1 GHz").arg(hz / 1e9, 0, 'f', decimals);
-    return QStringLiteral("%1 MHz").arg(hz / 1e6, 0, 'f', decimals);
+    if (absHz >= 1e6)
+        return QStringLiteral("%1 MHz").arg(hz / 1e6, 0, 'f', decimals);
+    if (absHz >= 1e3)
+        return QStringLiteral("%1 kHz").arg(hz / 1e3, 0, 'f', decimals);
+    return QStringLiteral("%1 Hz").arg(hz, 0, 'f', decimals);
+}
+
+bool MainWindow::validateConfiguration(const source::SourceConfig& config, QString& error) const
+{
+    if (config.kind == algorithm::SourceKind::File) {
+        if (config.filePath.empty()) {
+            error = QStringLiteral("请选择频谱文件。");
+            return false;
+        }
+        if (!std::isfinite(config.centerFrequencyHz) ||
+            !std::isfinite(config.bandwidthHz) || config.bandwidthHz <= 0.0) {
+            error = QStringLiteral("文件源的起始频率必须小于终止频率。");
+            return false;
+        }
+        return true;
+    }
+
+    const double startHz = config.centerFrequencyHz - config.bandwidthHz / 2.0;
+    const double endHz = config.centerFrequencyHz + config.bandwidthHz / 2.0;
+    if (!std::isfinite(startHz) || !std::isfinite(endHz) ||
+        startHz < 9.0e3 || endHz > 6.0e9 || endHz <= startHz) {
+        error = QStringLiteral("起止频率必须位于 9 kHz 至 6 GHz 范围内。");
+        return false;
+    }
+    if (config.bandwidthHz < 20.0) {
+        error = QStringLiteral("扫宽不能小于 20 Hz。");
+        return false;
+    }
+    if (!std::isfinite(config.resolutionBandwidthHz) ||
+        config.resolutionBandwidthHz < 0.602006912 ||
+        config.resolutionBandwidthHz > 10.1e6) {
+        error = QStringLiteral("RBW 必须位于 0.602006912 Hz 至 10.1 MHz 范围内。");
+        return false;
+    }
+    if (!std::isfinite(config.referenceLevelDbm) || config.referenceLevelDbm > 20.0) {
+        error = QStringLiteral("BB60C 参考电平不能大于 20 dBm。");
+        return false;
+    }
+    if (config.rbwShape < source::RbwShape::Nuttall ||
+        config.rbwShape > source::RbwShape::Cispr) {
+        error = QStringLiteral("RBW窗口类型无效。");
+        return false;
+    }
+    return true;
 }
 
 void MainWindow::browseFile()
@@ -570,28 +826,46 @@ void MainWindow::browseFile()
         QStringLiteral("Spectrum files (*.bin *.dat *.txt *.csv *.asc);;All files (*.*)"));
     if (path.isEmpty()) return;
     m_filePath->setText(path);
-    m_sourceCombo->setCurrentIndex(2);
-    applyFileMetadata(path);
+    clearMonitoringDisplay();
+    if (m_sourceCombo->currentData().toInt() != static_cast<int>(algorithm::SourceKind::File)) {
+        m_sourceCombo->setCurrentIndex(2);
+    } else {
+        applyFileMetadata(path);
+    }
 }
 
 void MainWindow::applyFileMetadata(const QString& path)
 {
+    m_fileFrequencyMetadataLocked = false;
+    m_fileRbwMetadataLocked = false;
+    m_fileReferenceMetadataLocked = false;
     source::FileSourceMetadata metadata;
     std::string error;
     if (!source::FileSource::inspectFile(path.toStdString(), metadata, error)) {
         statusBar()->showMessage(QString::fromStdString(error), 6000);
+        updateSourceControls();
+        updateDisplayDomain();
         return;
     }
 
     if (metadata.hasCenterFrequency && metadata.hasBandwidth) {
-        m_startFrequency->setValue((metadata.centerFrequencyHz - metadata.bandwidthHz / 2.0) / 1e9);
-        m_endFrequency->setValue((metadata.centerFrequencyHz + metadata.bandwidthHz / 2.0) / 1e9);
+        m_updatingFrequency = true;
+        const double startHz = metadata.centerFrequencyHz - metadata.bandwidthHz / 2.0;
+        const double endHz = metadata.centerFrequencyHz + metadata.bandwidthHz / 2.0;
+        m_startFrequency->setValue(startHz);
+        m_endFrequency->setValue(endHz);
+        m_centerFrequency->setValue(metadata.centerFrequencyHz);
+        m_bandwidth->setValue(metadata.bandwidthHz);
+        m_updatingFrequency = false;
+        m_fileFrequencyMetadataLocked = true;
     }
     if (metadata.hasResolutionBandwidth) {
-        m_resolutionBandwidth->setValue(metadata.resolutionBandwidthHz / 1e3);
+        m_resolutionBandwidth->setValue(metadata.resolutionBandwidthHz);
+        m_fileRbwMetadataLocked = true;
     }
     if (metadata.hasReferenceLevel) {
         m_referenceLevel->setValue(metadata.referenceLevelDbm);
+        m_fileReferenceMetadataLocked = true;
     }
     if (metadata.hasSpectrumLength) {
         const auto length = static_cast<qlonglong>(metadata.spectrumLength);
@@ -606,12 +880,25 @@ void MainWindow::applyFileMetadata(const QString& path)
             .arg(static_cast<qulonglong>(metadata.trailingBytes));
     }
     statusBar()->showMessage(message, 5000);
+    updateSourceControls();
+    updateDisplayDomain();
 }
 
 void MainWindow::sourceSelectionChanged(int)
 {
+    const bool fileSource = m_sourceCombo->currentData().toInt() == static_cast<int>(algorithm::SourceKind::File);
+    if (m_sourceFields) m_sourceFields->setCurrentIndex(fileSource ? 1 : 0);
+    if (fileSource) {
+        const QString path = m_filePath->text().trimmed();
+        if (!path.isEmpty() && QFileInfo::exists(path)) applyFileMetadata(path);
+    }
     updateSourceControls();
-    if (m_sourceCombo && m_statusStrip) m_statusStrip->setDeviceValue(m_sourceCombo->currentText());
+    clearMonitoringDisplay();
+    updateDisplayDomain();
+    if (m_sourceCombo && m_statusStrip) {
+        m_statusStrip->setDeviceValue(m_sourceCombo->currentText());
+        m_statusStrip->setMenuInfoVisible(fileSource);
+    }
 }
 
 void MainWindow::updateSourceControls()
@@ -619,31 +906,201 @@ void MainWindow::updateSourceControls()
     if (!m_sourceCombo) return;
     const bool fileSource = m_sourceCombo->currentData().toInt() == static_cast<int>(algorithm::SourceKind::File);
     const bool editable = !m_monitoring;
+    m_centerFrequency->setEnabled(!fileSource && editable);
+    m_bandwidth->setEnabled(!fileSource && editable);
     m_filePath->setEnabled(fileSource && editable);
     m_browseButton->setEnabled(fileSource && editable);
+    // FILE metadata are authoritative for the active file.  Keep the values
+    // visible for ISA-style inspection, but never allow editing them in FILE
+    // mode; a different file is selected through the Browse button.
+    m_startFrequency->setEnabled(editable && !fileSource);
+    m_endFrequency->setEnabled(editable && !fileSource);
+    m_resolutionBandwidth->setEnabled(editable && !fileSource);
+    m_referenceLevel->setEnabled(editable && !fileSource);
+    m_rbwShape->setEnabled(!fileSource && editable);
+    if (m_rbwShapeLabel) m_rbwShapeLabel->setVisible(!fileSource);
+    m_rbwShape->setVisible(!fileSource);
+    if (auto* grid = qobject_cast<QGridLayout*>(m_sourceFields
+                                                     ? m_sourceFields->parentWidget()->layout()
+                                                     : nullptr)) {
+        grid->invalidate();
+        grid->activate();
+    }
     m_loopFile->setEnabled(fileSource && editable);
     m_sourceCombo->setEnabled(editable);
-    m_startFrequency->setEnabled(editable);
-    m_endFrequency->setEnabled(editable);
-    m_resolutionBandwidth->setEnabled(editable);
-    m_referenceLevel->setEnabled(editable);
     m_pointCount->setEnabled(editable);
     m_frameRate->setEnabled(editable);
     m_applyButton->setEnabled(editable);
 }
 
+void MainWindow::updateDisplayDomain()
+{
+    if (!m_spectrum || !m_waterfall || !m_startFrequency || !m_endFrequency ||
+        !m_referenceLevel) {
+        return;
+    }
+    const double startHz = m_startFrequency->value();
+    const double endHz = m_endFrequency->value();
+    const double referenceLevelDbm = m_referenceLevel->value();
+    if (!std::isfinite(startHz) || !std::isfinite(endHz) || !(endHz > startHz)) {
+        return;
+    }
+    m_spectrum->setDisplayDomain(startHz, endHz, referenceLevelDbm);
+    m_waterfall->setDisplayDomain(startHz, endHz, referenceLevelDbm);
+}
+
+void MainWindow::loadUiState()
+{
+    QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+    // Display zoom and selection are intentionally session-local.  Remove
+    // legacy keys so older installations cannot restore them indirectly.
+    settings.remove(QStringLiteral("display"));
+
+    const int savedSourceKind = settings.value(
+        QStringLiteral("source/kind"), static_cast<int>(algorithm::SourceKind::File)).toInt();
+    int sourceIndex = m_sourceCombo->findData(savedSourceKind);
+    if (sourceIndex < 0) {
+        sourceIndex = m_sourceCombo->findData(static_cast<int>(algorithm::SourceKind::File));
+    }
+    m_sourceCombo->setCurrentIndex(sourceIndex);
+
+    m_filePath->setText(settings.value(QStringLiteral("source/filePath"),
+                                       defaultSpectrumFilePath()).toString());
+    const auto readFrequency = [&settings](const QString& hzKey,
+                                            const QString& legacyKey,
+                                            double fallback,
+                                            double legacyScale) {
+        if (settings.contains(hzKey)) return settings.value(hzKey).toDouble();
+        return settings.value(legacyKey, fallback / legacyScale).toDouble() * legacyScale;
+    };
+    m_centerFrequency->setValue(readFrequency(QStringLiteral("source/centerFrequencyHz"),
+                                               QStringLiteral("source/centerFrequencyGHz"),
+                                               m_centerFrequency->value(), 1.0e9));
+    m_bandwidth->setValue(readFrequency(QStringLiteral("source/bandwidthHz"),
+                                        QStringLiteral("source/bandwidthGHz"),
+                                        m_bandwidth->value(), 1.0e9));
+    m_startFrequency->setValue(readFrequency(QStringLiteral("source/startFrequencyHz"),
+                                             QStringLiteral("source/startFrequencyGHz"),
+                                             m_startFrequency->value(), 1.0e9));
+    m_endFrequency->setValue(readFrequency(QStringLiteral("source/endFrequencyHz"),
+                                           QStringLiteral("source/endFrequencyGHz"),
+                                           m_endFrequency->value(), 1.0e9));
+    m_resolutionBandwidth->setValue(readFrequency(QStringLiteral("source/resolutionBandwidthHz"),
+                                                  QStringLiteral("source/resolutionBandwidthKHz"),
+                                                  m_resolutionBandwidth->value(), 1.0e3));
+    m_referenceLevel->setValue(settings.value(QStringLiteral("source/referenceLevelDbm"),
+                                              m_referenceLevel->value()).toDouble());
+    const int savedRbwShape = settings.value(QStringLiteral("source/rbwShape"),
+                                              static_cast<int>(source::RbwShape::Nuttall)).toInt();
+    const int rbwShapeIndex = m_rbwShape->findData(savedRbwShape);
+    if (rbwShapeIndex >= 0) m_rbwShape->setCurrentIndex(rbwShapeIndex);
+    m_pointCount->setValue(settings.value(QStringLiteral("source/pointCount"),
+                                          m_pointCount->value()).toInt());
+    m_frameRate->setValue(settings.value(QStringLiteral("source/frameRate"),
+                                         m_frameRate->value()).toInt());
+    m_loopFile->setChecked(settings.value(QStringLiteral("source/loopFile"),
+                                          m_loopFile->isChecked()).toBool());
+
+    m_spectrum->setMaxSpectrumVisible(
+        settings.value(QStringLiteral("spectrum/showMaxSpectrum"), false).toBool());
+    m_spectrum->setRealtimeSpectrumVisible(
+        settings.value(QStringLiteral("spectrum/showRealtimeSpectrum"), true).toBool());
+    m_spectrum->setAverageSpectrumVisible(
+        settings.value(QStringLiteral("spectrum/showAverageSpectrum"), false).toBool());
+    m_spectrum->setDetectionMarkersVisible(
+        settings.value(QStringLiteral("spectrum/showDetectionMarkers"), true).toBool());
+
+    const QString filePath = m_filePath->text().trimmed();
+    if (savedSourceKind == static_cast<int>(algorithm::SourceKind::File) &&
+        QFileInfo::exists(filePath)) {
+        applyFileMetadata(filePath);
+    }
+
+    if (settings.contains(QStringLiteral("ui/geometry"))) {
+        restoreGeometry(settings.value(QStringLiteral("ui/geometry")).toByteArray());
+    }
+    if (settings.contains(QStringLiteral("ui/windowState"))) {
+        restoreState(settings.value(QStringLiteral("ui/windowState")).toByteArray(), 1);
+    }
+    if (m_plotSplitter && settings.contains(QStringLiteral("ui/plotSplitterState"))) {
+        m_plotSplitter->restoreState(
+            settings.value(QStringLiteral("ui/plotSplitterState")).toByteArray());
+    }
+
+    const int page = std::clamp(settings.value(QStringLiteral("ui/mainPage"), 0).toInt(),
+                                0, std::max(0, m_pages->count() - 1));
+    selectMainPage(page);
+}
+
+void MainWindow::saveUiState() const
+{
+    QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+    settings.setValue(QStringLiteral("ui/geometry"), saveGeometry());
+    settings.setValue(QStringLiteral("ui/windowState"), saveState(1));
+    settings.setValue(QStringLiteral("ui/mainPage"), m_pages ? m_pages->currentIndex() : 0);
+    if (m_plotSplitter) {
+        settings.setValue(QStringLiteral("ui/plotSplitterState"), m_plotSplitter->saveState());
+    }
+
+    const int sourceKind = m_sourceCombo->currentData().toInt();
+    settings.setValue(QStringLiteral("source/kind"), sourceKind);
+    settings.setValue(QStringLiteral("source/filePath"), m_filePath->text());
+    settings.setValue(QStringLiteral("source/centerFrequencyHz"), m_centerFrequency->value());
+    settings.setValue(QStringLiteral("source/bandwidthHz"), m_bandwidth->value());
+    settings.setValue(QStringLiteral("source/startFrequencyHz"), m_startFrequency->value());
+    settings.setValue(QStringLiteral("source/endFrequencyHz"), m_endFrequency->value());
+    settings.setValue(QStringLiteral("source/resolutionBandwidthHz"), m_resolutionBandwidth->value());
+    settings.setValue(QStringLiteral("source/referenceLevelDbm"), m_referenceLevel->value());
+    settings.setValue(QStringLiteral("source/rbwShape"), m_rbwShape->currentData().toInt());
+    settings.setValue(QStringLiteral("source/pointCount"), m_pointCount->value());
+    settings.setValue(QStringLiteral("source/frameRate"), m_frameRate->value());
+    settings.setValue(QStringLiteral("source/loopFile"), m_loopFile->isChecked());
+    settings.setValue(QStringLiteral("spectrum/showMaxSpectrum"),
+                      m_spectrum->maxSpectrumVisible());
+    settings.setValue(QStringLiteral("spectrum/showRealtimeSpectrum"),
+                      m_spectrum->realtimeSpectrumVisible());
+    settings.setValue(QStringLiteral("spectrum/showAverageSpectrum"),
+                      m_spectrum->averageSpectrumVisible());
+    settings.setValue(QStringLiteral("spectrum/showDetectionMarkers"),
+                      m_spectrum->detectionMarkersVisible());
+    settings.remove(QStringLiteral("display"));
+    settings.sync();
+}
+
 void MainWindow::applyConfiguration()
 {
-    if (m_endFrequency->value() <= m_startFrequency->value()) {
-        m_endFrequency->setValue(m_startFrequency->value() + 0.001);
+    (void)applyCurrentConfiguration();
+}
+
+bool MainWindow::applyCurrentConfiguration()
+{
+    const auto config = currentConfig();
+    QString validationError;
+    if (!validateConfiguration(config, validationError)) {
+        statusBar()->showMessage(validationError, 6000);
+        return false;
     }
-    m_controller.configure(currentConfig());
+    m_controller.configure(config);
+    updateDisplayDomain();
     m_spectrum->resetView();
     m_waterfall->resetView();
-    const auto config = currentConfig();
     m_statusStrip->setMenuInfo(config.centerFrequencyHz, config.bandwidthHz,
                                config.resolutionBandwidthHz);
+    m_statusStrip->setMenuInfoVisible(config.kind == algorithm::SourceKind::File);
     statusBar()->showMessage(QStringLiteral("参数已提交，等待数据源初始化。"), 3000);
+    return true;
+}
+
+void MainWindow::clearMonitoringDisplay()
+{
+    m_pendingSnapshot.reset();
+    m_spectrum->clear();
+    m_waterfall->clear();
+    m_signalTable->setRowCount(0);
+    m_criticalAlertLabel->setText(QStringLiteral("0"));
+    m_generalAlarmLabel->setText(QStringLiteral("0"));
+    m_signalTotalLabel->setText(QStringLiteral("0"));
+    m_frameLabel->setText(QStringLiteral("帧号：-"));
 }
 
 void MainWindow::startMonitoring()
@@ -652,7 +1109,9 @@ void MainWindow::startMonitoring()
         stopMonitoring();
         return;
     }
-    applyConfiguration();
+    if (!applyCurrentConfiguration()) return;
+    clearMonitoringDisplay();
+    m_waitingForNewRun = true;
     m_controller.start();
 }
 
@@ -720,6 +1179,7 @@ void MainWindow::updateButtonState(const QString& state)
 void MainWindow::onSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
 {
     // 采集线程可能快于屏幕刷新；只保留最新快照，避免 UI 事件队列积压旧帧。
+    if (m_waitingForNewRun) return;
     m_pendingSnapshot = snapshot;
 }
 
@@ -734,9 +1194,15 @@ void MainWindow::refreshDisplay()
     m_spectrum->setSnapshot(snapshot);
     m_waterfall->setSnapshot(snapshot);
     m_frameLabel->setText(QStringLiteral("帧号：%1").arg(snapshot->frame.sequence));
-    m_statusStrip->setMenuInfo((snapshot->frame.startFrequencyHz + endFrequencyHz) / 2.0,
-                               endFrequencyHz - snapshot->frame.startFrequencyHz,
-                               m_resolutionBandwidth->value() * 1e3);
+    const bool fileSource = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt()) ==
+        algorithm::SourceKind::File;
+    if (fileSource) {
+        m_statusStrip->setMenuInfo((snapshot->frame.startFrequencyHz + endFrequencyHz) / 2.0,
+                                   endFrequencyHz - snapshot->frame.startFrequencyHz,
+                                   m_resolutionBandwidth->value());
+    } else {
+        m_statusStrip->setMenuInfoVisible(false);
+    }
     updateMonitorMetrics(*snapshot);
 
     m_signalTable->setRowCount(static_cast<int>(snapshot->detection.detections.size()));
@@ -754,7 +1220,7 @@ void MainWindow::refreshDisplay()
     if (static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt()) == algorithm::SourceKind::File) {
             m_playbackPage->rememberFile(QString::fromStdString(m_filePath->text().toStdString()),
             m_sourceCombo->currentText(), snapshot->frame.startFrequencyHz,
-            endFrequencyHz, m_resolutionBandwidth->value() * 1e3,
+            endFrequencyHz, m_resolutionBandwidth->value(),
             static_cast<int>(snapshot->detection.detections.size()), 0);
     }
 }
@@ -775,12 +1241,21 @@ void MainWindow::updateMonitorMetrics(const algorithm::DisplaySnapshot& snapshot
 void MainWindow::onStateChanged(const QString& state)
 {
     m_stateLabel->setText(state);
+    if (state.contains(QStringLiteral("Running")) || state.contains(QStringLiteral("运行"))) {
+        m_waitingForNewRun = false;
+    } else if (state.contains(QStringLiteral("Stopped")) ||
+               state.contains(QStringLiteral("停止")) ||
+               state.contains(QStringLiteral("failed")) ||
+               state.contains(QStringLiteral("失败"))) {
+        m_waitingForNewRun = false;
+    }
     updateButtonState(state);
     statusBar()->showMessage(state, 4000);
 }
 
 void MainWindow::onError(const QString& message)
 {
+    m_waitingForNewRun = false;
     m_stateLabel->setText(QStringLiteral("错误"));
     statusBar()->showMessage(message, 8000);
     QMessageBox::warning(this, QStringLiteral("监测操作失败"), message);
@@ -790,8 +1265,11 @@ void MainWindow::onError(const QString& message)
 void MainWindow::onReplayRequested(const QString& path)
 {
     m_filePath->setText(path);
-    m_sourceCombo->setCurrentIndex(2);
-    applyFileMetadata(path);
+    if (m_sourceCombo->currentData().toInt() != static_cast<int>(algorithm::SourceKind::File)) {
+        m_sourceCombo->setCurrentIndex(2);
+    } else {
+        applyFileMetadata(path);
+    }
     selectMainPage(0);
     statusBar()->showMessage(QStringLiteral("已选择回放文件，可点击开始监测读取。"), 5000);
 }
@@ -804,6 +1282,7 @@ void MainWindow::updateRuntimeStatus()
 
 void MainWindow::closeEvent(QCloseEvent* event)
 {
+    saveUiState();
     m_controller.stop();
     event->accept();
 }

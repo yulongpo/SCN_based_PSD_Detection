@@ -31,8 +31,11 @@ public slots:
         m_running = false;
         m_paused = false;
 
+        publishDeviceStatuses(algorithm::SourceKind::File, false);
+
         std::string error;
         if (!m_sources.configure(config, error)) {
+            publishDeviceStatuses(config.kind, false);
             emit errorOccurred(QString::fromStdString(error));
             emit stateChanged(QStringLiteral("Source configuration failed"));
             return;
@@ -43,6 +46,8 @@ public slots:
             emit errorOccurred(QStringLiteral("DetectionEngine initialization failed."));
             return;
         }
+
+        publishDeviceStatuses(config.kind, true);
 
         const int intervalMs = 1000 / std::max(1, config.frameRateHz);
         m_timer->setInterval(intervalMs);
@@ -97,6 +102,9 @@ signals:
     void snapshotReady(const algorithm::DisplaySnapshotPtr& snapshot);
     void stateChanged(const QString& state);
     void errorOccurred(const QString& message);
+    void deviceStatusChanged(const QString& device,
+                             const QString& status,
+                             bool connected);
 
 private slots:
     void onTick()
@@ -116,6 +124,18 @@ private slots:
     }
 
 private:
+    void publishDeviceStatuses(algorithm::SourceKind activeKind, bool configured)
+    {
+        const bool bb60cConnected = configured && activeKind == algorithm::SourceKind::BB60C;
+        const bool harogicConnected = false;
+        emit deviceStatusChanged(QStringLiteral("BB60C"),
+                                 bb60cConnected ? QStringLiteral("已连接") : QStringLiteral("未连接"),
+                                 bb60cConnected);
+        emit deviceStatusChanged(QStringLiteral("海得罗捷"),
+                                 harogicConnected ? QStringLiteral("已连接") : QStringLiteral("未接入"),
+                                 harogicConnected);
+    }
+
     void ensureTimer()
     {
         if (m_timer) return;
@@ -156,6 +176,9 @@ MonitoringSession::MonitoringSession(QObject* parent)
             Qt::QueuedConnection);
     connect(m_worker, &SessionWorker::errorOccurred,
             this, &MonitoringSession::errorOccurred,
+            Qt::QueuedConnection);
+    connect(m_worker, &SessionWorker::deviceStatusChanged,
+            this, &MonitoringSession::deviceStatusChanged,
             Qt::QueuedConnection);
     m_workerThread.start();
 }

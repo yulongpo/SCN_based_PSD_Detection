@@ -12,6 +12,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 option(SCN_BUILD_TESTS "Configure the user-owned test targets" ON)
 option(SCN_BUILD_DETECTION_LAB "Build the standalone DetectionLab tool" ON)
 
+set(SCN_BB60C_SDK_ROOT
+    "D:/project/isa2/3rdparty/bb_series"
+    CACHE PATH "Signal Hound BB API SDK root")
+
 find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Widgets)
 
 add_library(scn_project_options INTERFACE)

@@ -45,6 +45,13 @@ target_link_libraries(HaiAISpecMonitor PRIVATE
     Qt6::Widgets
 )
 
+if(WIN32)
+    target_link_libraries(HaiAISpecMonitor PRIVATE
+        d2d1
+        dwrite
+    )
+endif()
+
 set_target_properties(HaiAISpecMonitor PROPERTIES
     WIN32_EXECUTABLE TRUE
     DEBUG_POSTFIX "d"
@@ -78,6 +85,19 @@ if(WIN32)
     else()
         message(WARNING "windeployqt.exe was not found; Qt DLL deployment is disabled")
     endif()
+
+    get_property(SCN_BB60C_RUNTIME_DLLS GLOBAL PROPERTY SCN_BB60C_RUNTIME_DLLS)
+    foreach(SCN_BB60C_RUNTIME_DLL IN LISTS SCN_BB60C_RUNTIME_DLLS)
+        if(EXISTS "${SCN_BB60C_RUNTIME_DLL}")
+            add_custom_command(TARGET HaiAISpecMonitor POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${SCN_BB60C_RUNTIME_DLL}"
+                    "$<TARGET_FILE_DIR:HaiAISpecMonitor>"
+                COMMENT "Deploying BB60C runtime: ${SCN_BB60C_RUNTIME_DLL}"
+                VERBATIM
+            )
+        endif()
+    endforeach()
 endif()
 
 install(TARGETS HaiAISpecMonitor
