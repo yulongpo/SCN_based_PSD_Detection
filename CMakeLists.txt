@@ -13,8 +13,11 @@ option(SCN_BUILD_TESTS "Configure the user-owned test targets" ON)
 option(SCN_BUILD_DETECTION_LAB "Build the standalone DetectionLab tool" ON)
 
 set(SCN_BB60C_SDK_ROOT
-    "D:/project/isa2/3rdparty/bb_series"
+    "${PROJECT_SOURCE_DIR}/third_party/bb60c"
     CACHE PATH "Signal Hound BB API SDK root")
+set(SCN_HAROGIC_SDK_ROOT
+    "${PROJECT_SOURCE_DIR}/third_party/harogic"
+    CACHE PATH "Harogic HTRA SDK root")
 
 include(cmake/ScnTensorRT.cmake)
 

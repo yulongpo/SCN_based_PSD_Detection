@@ -87,14 +87,14 @@ if(WIN32)
         message(WARNING "windeployqt.exe was not found; Qt DLL deployment is disabled")
     endif()
 
-    get_property(SCN_BB60C_RUNTIME_DLLS GLOBAL PROPERTY SCN_BB60C_RUNTIME_DLLS)
-    foreach(SCN_BB60C_RUNTIME_DLL IN LISTS SCN_BB60C_RUNTIME_DLLS)
-        if(EXISTS "${SCN_BB60C_RUNTIME_DLL}")
+    get_property(SCN_SOURCE_RUNTIME_DLLS GLOBAL PROPERTY SCN_SOURCE_RUNTIME_DLLS)
+    foreach(SCN_SOURCE_RUNTIME_DLL IN LISTS SCN_SOURCE_RUNTIME_DLLS)
+        if(EXISTS "${SCN_SOURCE_RUNTIME_DLL}")
             add_custom_command(TARGET HaiAISpecMonitor POST_BUILD
                 COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-                    "${SCN_BB60C_RUNTIME_DLL}"
+                    "${SCN_SOURCE_RUNTIME_DLL}"
                     "$<TARGET_FILE_DIR:HaiAISpecMonitor>"
-                COMMENT "Deploying BB60C runtime: ${SCN_BB60C_RUNTIME_DLL}"
+                COMMENT "Deploying source runtime: ${SCN_SOURCE_RUNTIME_DLL}"
                 VERBATIM
             )
         endif()

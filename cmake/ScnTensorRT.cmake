@@ -9,10 +9,10 @@ option(SCN_ENABLE_TENSORRT "Enable the TensorRT SCN inference backend" ${_scn_te
 unset(_scn_tensorrt_default)
 
 set(SCN_TENSORRT_ROOT
-    "D:/project/isa/submodules/HaiSignal/3rdparty/tensorrt"
+    "${PROJECT_SOURCE_DIR}/third_party/tensorrt"
     CACHE PATH "TensorRT 10.11 SDK root (include, lib, and matching bin)")
 set(SCN_MODEL_SOURCE
-    "D:/project/isa/bin/models/scn_model.engine"
+    "${PROJECT_SOURCE_DIR}/models/scn_model.engine"
     CACHE FILEPATH "Serialized SCN engine copied to models/scn_model.engine")
 
 if(SCN_ENABLE_TENSORRT)

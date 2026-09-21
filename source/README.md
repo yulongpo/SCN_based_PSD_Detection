@@ -13,9 +13,13 @@ shape (`Nuttall`, `Flattop`, or `CISPR`) and sweep detector, then returns the
 hardware dBm trace from `bbFetchTrace_32f`. The reference level controls the
 device's automatic gain/attenuation target and is also used by the UI as the
 top of the 100 dB display range.
-`HarogicSource` remains a placeholder adapter until its HTRA device contract
-is migrated; the UI reports it as not connected rather than treating the
-deterministic profile as a hardware connection.
+`HarogicSource` uses the local Harogic HTRA SDK when `SCN_HAROGIC_SDK_ROOT`
+points to a valid SDK. It opens the first USB device, configures the HTRA SWP
+mode with the center/span, reference level, RBW and window settings, assembles
+the partial sweeps into a complete trace, and publishes the returned hardware
+dBm spectrum. HTRA data timestamps are used when available. If the SDK or its
+runtime DLLs are missing, the adapter fails configuration explicitly and the
+UI reports the source as disconnected; it does not fall back to synthetic data.
 `FileSource` follows the original ISA offline spectrum format. A `.dat` file
 contains consecutive little-endian `float32` power-spectrum frames. Its name
 may contain `Fc=..._Bw=..._Rbw=..._Reflevel=..._SpectrumLen=...`; these values

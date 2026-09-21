@@ -207,25 +207,44 @@ cmake --build --preset vs2026-qt611-debug --target scn_tests scn_session_tests s
 .\out\build\vs2026-qt611-debug\app\HaiAISpecMonitor\Debug\HaiAISpecMonitord.exe
 ```
 
-BB60C 构建默认使用 `D:/project/isa2/3rdparty/bb_series` 中的
+BB60C 构建默认使用项目内 `third_party/bb60c` 中的
 `bb_api.h`、`bb_api.lib`、`bb_api.dll` 和 `ftd2xx.dll`。如果 SDK 安装在
 其他位置，配置 CMake 时覆盖 `SCN_BB60C_SDK_ROOT`。程序启动后，状态栏会
-分别显示 BB60C 与海得罗捷的接入状态；当前海得罗捷适配器仍是占位实现，
-因此显示为“未接入”。
+分别显示 BB60C 与海得罗捷的接入状态。Harogic 默认使用项目内
+`third_party/harogic` 中的 HTRA SDK；配置成功后执行真实 SWP 扫频并显示硬件
+dBm 频谱，SDK 或运行库缺失时明确显示为“未接入”，不会回退到合成数据。
+
+| CMake 参数 | 本机默认值 |
+| --- | --- |
+| `SCN_HAROGIC_SDK_ROOT` | `${sourceDir}/third_party/harogic` |
 
 默认同时启用 TensorRT 后端：
 
 | CMake 参数 | 本机默认值 |
 | --- | --- |
 | `SCN_ENABLE_TENSORRT` | `ON` |
-| `SCN_TENSORRT_ROOT` | `D:/project/isa/submodules/HaiSignal/3rdparty/tensorrt` |
-| `SCN_MODEL_SOURCE` | `D:/project/isa/bin/models/scn_model.engine` |
+| `SCN_TENSORRT_ROOT` | `${sourceDir}/third_party/tensorrt` |
+| `SCN_MODEL_SOURCE` | `${sourceDir}/models/scn_model.engine` |
 | `CUDAToolkit_ROOT` | `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4` |
 
 使用 TensorRT 10.11.0，C++ Runtime API 不编译 CUDA 核函数。部署程序会复制模型和
 TensorRT SDK 自带的配套运行库（含 CUDA Runtime 12.9），不要用 Toolkit 12.4 的
-同名 `cudart64_12.dll` 覆盖。模型、SDK 和导出结果不加入 Git。
+同名 `cudart64_12.dll` 覆盖。TensorRT headers、导入库、运行时 DLL 和默认 engine
+已复制到当前项目的 `third_party/tensorrt` 与 `models`；这些二进制资产仍由
+`.gitignore` 排除，避免将大体积及受许可约束的厂商二进制提交到源码仓库。
 `SCN_ENABLE_TENSORRT=OFF` 可构建明确报告检测不可用的版本，不会切换为假检测。
+
+## 依赖包部署
+
+BB60C、Harogic HTRA、TensorRT 的完整导入库和运行库，以及默认
+`models/scn_model.engine`，作为 GitHub Release 的依赖 ZIP 发布。部署到新机器时，
+先克隆 `scn_dev` 分支，再从仓库的 Releases 页面下载对应版本的依赖包，并在仓库
+根目录解压，确保生成 `third_party/bb60c`、`third_party/harogic`、
+`third_party/tensorrt` 和 `models/scn_model.engine`。Qt 6.11.1 与 CUDA Toolkit
+不包含在该 ZIP 中，需要在目标机器单独安装。
+
+依赖目录和模型由现有 `.gitignore` 排除；源码仓库提交头文件和构建配置，Release
+资产提供大体积 DLL、LIB 及 engine 文件。
 
 DetectionLab 快速入口：
 

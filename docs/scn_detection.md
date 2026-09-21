@@ -68,8 +68,8 @@ ISA JSON 导入/导出和应用。配置保存到 `config/policy.json`，事件�
 
 ## 模型与依赖
 
-默认 engine：`D:/project/isa/bin/models/scn_model.engine`。
-默认 SDK：`D:/project/isa/submodules/HaiSignal/3rdparty/tensorrt`（10.11.0）。
+默认 engine：项目内 `models/scn_model.engine`。
+默认 SDK：项目内 `third_party/tensorrt`（10.11.0）。
 输入为 `resnet_32_input:0`，float32 `[1,32768,1,1]`。
 输出命名绑定：`Identity:0` 带宽、`Identity_1:0` 热图、`Identity_2:0` 中心偏移，
 每项为 8192 个 float32，不能按枚举顺序或 Python 输出顺序接线。
@@ -83,7 +83,8 @@ ISA JSON 导入/导出和应用。配置保存到 `config/policy.json`，事件�
 CMake 仅启用 CXX。FindCUDAToolkit 可以查询 nvcc 版本，但不会用 nvcc 编译代码。
 部署使用 TensorRT/bin 的 nvinfer_10.dll、cudart64_12.dll、cublas64_12.dll、cublasLt64_12.dll；
 包内 cudart 是 12.9，不得被 Toolkit 12.4 的同名 DLL 覆盖。
-模型与 DLL 复制到各运行目录，模型位于 `models/scn_model.engine`；SDK/模型/导出不提交 Git。
+模型与 DLL 复制到各运行目录，源文件位于项目内 `models/scn_model.engine`；项目内
+`third_party` 与 `models` 的厂商二进制仍由 `.gitignore` 排除，不纳入源码提交。
 
 ## 编译与运行（用户执行）
 

@@ -119,9 +119,11 @@ private:
     void publishDevices(bool configured)
     {
         const bool bb = configured && m_sources.kind() == algorithm::SourceKind::BB60C;
+        const bool harogic = configured && m_sources.kind() == algorithm::SourceKind::Harogic;
         emit deviceStatusChanged(m_control, QStringLiteral("BB60C"),
             bb ? QStringLiteral("已连接") : QStringLiteral("未连接"), bb);
-        emit deviceStatusChanged(m_control, QStringLiteral("海得罗捷"), QStringLiteral("未接入"), false);
+        emit deviceStatusChanged(m_control, QStringLiteral("海得罗捷"),
+            harogic ? QStringLiteral("已连接") : QStringLiteral("未接入"), harogic);
     }
     SessionPipeline& m_pipeline;
     SourceManager m_sources;
