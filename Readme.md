@@ -80,6 +80,7 @@ ISA 风格缩写，单位大小写不敏感：
 
 频谱图交互如下：
 
+- 频谱图右上角的实时谱、最大谱、平均谱和检测标记开关仅在鼠标移入频谱图时显示，离开后自动隐藏；
 - 在绘图区滚轮：按鼠标位置缩放频率范围；
 - 在 X 轴下方滚轮：同样缩放频率范围，锚点跟随鼠标 X 位置；
 - 在 X 轴下方按住左键拖动：水平平移频率范围；
@@ -89,8 +90,15 @@ ISA 风格缩写，单位大小写不敏感：
 - 在绘图区中键拖动：水平平移；
 - 右键还原或双击：恢复全频段和默认功率范围。
 
-瀑布图跟随频谱图频率视窗同步更新，保留最新帧在顶部、100 行历史记录、
-ISA 风格色阶和绘图区网格。
+瀑布图与频谱图之间的频率导航条表示完整采集频段和当前视窗：拖动选区中部
+可以平移，拖动左右手柄可以分别调整起止频率，滚轮按锚点缩放。导航条只改变显示
+轨道和选区，不显示额外刻度文字；它不改变采集、检测、白名单和告警规则的频率
+范围，导航视窗也不会写入持久化配置。
+
+瀑布图跟随频谱图频率视窗同步更新，保留最新帧在顶部、100 行历史记录和
+ISA 风格色阶；频率范围与刻度统一由上方导航栏提供，瀑布图本身不绘制网格。
+瀑布图降采样采用 P75 稳健底噪统计，只有高出 P75 至少 6 dB 的孤立尖峰才保留
+尖峰值，避免随机噪声峰抬高整列底噪。
 
 ## 绘制与显示
 
@@ -113,6 +121,12 @@ ISA 风格色阶和绘图区网格。
 
 频谱视窗范围和选中频点不保存。程序不会因为恢复配置而自动启动硬件采集。
 
+系统设置→显示中的“显示刷新”控件可设置界面与检测结果发布频率，范围为 `1~120 fps`，默认
+`30 fps`，并保存到 `ui/displayRefreshRateHz`。该设置只控制最新数据提交到界面的
+节拍，不改变 BB60C、Harogic 或 File 源的采集／回放速率；采集频率仍由数据源参数控制。
+频谱、瀑布、检测标记、白名单业务结果、信号表和统计卡片统一在该显示节拍提交，
+中间到达的结果只保留最新版本，避免异步回调造成闪烁。
+
 “系统设置 → SCN 检测”保存独立的 `detection/*` 参数。算法累积默认 16 帧，
 与 UI 最近 100 帧最大谱/平均谱独立。切换显示开关不会改变检测结果。
 更换模型、GPU 或切换检测开关需先停止监测；阈值更新在下一处理周期生效。
@@ -130,9 +144,34 @@ SCN 草稿仅由“应用 SCN 设置”提交，开始采集使用已接受的�
 CNR 3 dB；窗口尾部按最低值补齐，仅有效原始区域参与电平计算。
 频率定位使用 `startFrequencyHz + binIndex * binWidthHz`，不对整谱插值或抽样。
 
-信号表与检测标记显示实际检测观测，信号类型为“未分类”。告警等级和告警卡片
-保持“未接入”，置信度不再映射为告警。模型不可用时显示具体错误，原始绘图仍可工作。
+信号表与检测标记显示应用层整理后的业务结果，信号类型为“未分类”。白名单和告警规则在
+应用层独立执行：命中白名单的原始结果会被移除，并由对应白名单配置频段生成 `W-<ID>`
+业务结果；白名单仍不会抑制告警。模型不可用时显示具体错误，原始绘图仍可工作。
 完整参数、数据语义、部署和验收见 [SCN 开发与验收说明](docs/scn_detection.md)。
+
+## 白名单、告警规则与历史
+
+系统设置中提供“白名单”和“告警规则”页面。频段采用相交匹配，端点相接也算
+命中：
+
+```text
+signalEnd >= policyStart && signalStart <= policyEnd
+```
+
+白名单支持名称、启用状态、频段和备注。命中一条白名单的多个原始结果合并为一条
+固定白名单频段结果；同一原始结果命中多条白名单时分别生成结果，允许频段重叠。
+替换结果的电平、CNR 和置信度来自命中结果中信号电平最高的代表结果，原始 ID 保留在详情和历史中。
+告警规则支持频段、带宽上下限、可选的
+最小信号电平/CNR/置信度、一般/严重等级、连续命中次数、最短持续时间和解除延时。
+同一信号的多条规则独立判断，活动事件取最高等级；白名单命中不会免除告警。
+旧 ISA 的 `whitelists.json` 和 `alarm_rules.json` 可从设置页导入，`carry_type`
+只作为兼容字段读取并在实际匹配中忽略。
+
+配置保存为应用目录下的 `config/policy.json`，使用 `QSaveFile` 原子替换；告警事件
+保存到 `config/policy.sqlite`。设置页的“告警历史”支持查询、确认选中事件以及
+CSV/JSON 导出。历史事件按监测轮次、分段、业务来源和业务 ID 建立，不会因 UI 刷新重复计数；
+白名单替换事件同时保存代表原始 ID 和全部归并原始 ID。
+程序暂停、检测失败或截断结果不会被当作信号消失；文件源事件使用文件逻辑时间。
 
 ## Qt 6.11 / VS 2026 编译
 
@@ -158,8 +197,8 @@ cmake --build --preset vs2026-qt611-debug --target HaiAISpecMonitor
 # 可选调试工具
 cmake --build --preset vs2026-qt611-debug --target DetectionLab
 
-# 编译用户执行的 CPU 测试（不运行测试）
-cmake --build --preset vs2026-qt611-debug --target scn_tests scn_session_tests
+# 编译 CPU、策略和 SQLite 存储测试
+cmake --build --preset vs2026-qt611-debug --target scn_tests scn_session_tests scn_policy_tests scn_policy_storage_tests
 ```
 
 运行主程序：
@@ -201,12 +240,13 @@ $lab = '.\out\build\vs2026-qt611-debug\tools\DetectionLab\Debug\DetectionLab.exe
 执行构建和静态检查：
 
 ```powershell
-cmake --build --preset vs2026-qt611-debug --target HaiAISpecMonitor DetectionLab scn_tests scn_session_tests
+cmake --build --preset vs2026-qt611-debug --target HaiAISpecMonitor DetectionLab scn_tests scn_session_tests scn_policy_tests scn_policy_storage_tests
 ctest --preset vs2026-qt611-debug
 git diff --check
 ```
 
-已注册 `scn_algorithm`、`scn_channel`、`scn_pipeline`、`scn_source`、`scn_hash`、`scn_session` 六组测试。
+已注册 `scn_algorithm`、`scn_channel`、`scn_pipeline`、`scn_source`、`scn_hash`、
+`scn_session`、`scn_policy`、`scn_policy_storage` 八组测试。
 测试使用隔离的测试后端，不访问 GPU 或设备，不代表真实模型兼容性或检测精度通过。
 本轮实施进行代码检查和编译，CTest、模型推理、文件/UI 及硬件验收由用户执行。
 

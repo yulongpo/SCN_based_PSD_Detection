@@ -18,7 +18,7 @@ set(SCN_BB60C_SDK_ROOT
 
 include(cmake/ScnTensorRT.cmake)
 
-find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 6.11 REQUIRED COMPONENTS Core Gui Widgets Sql)
 
 add_library(scn_project_options INTERFACE)
 target_compile_features(scn_project_options INTERFACE cxx_std_17)

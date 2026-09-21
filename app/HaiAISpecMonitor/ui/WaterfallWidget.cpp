@@ -24,21 +24,15 @@ namespace scn::app
 
 namespace
 {
-QString formatFrequencyLabel(double hz)
-{
-    const double absHz = std::abs(hz);
-    if (absHz >= 1e9)
-        return QStringLiteral("%1 GHz").arg(hz / 1e9, 0, 'f', 3);
-    if (absHz >= 1e6)
-        return QStringLiteral("%1 MHz").arg(hz / 1e6, 0, 'f', 3);
-    if (absHz >= 1e3)
-        return QStringLiteral("%1 kHz").arg(hz / 1e3, 0, 'f', 3);
-    return QStringLiteral("%1 Hz").arg(hz, 0, 'f', 0);
-}
-
 constexpr std::size_t kHistoryRows = 100;
 constexpr int kRenderOversample = 10;
-constexpr QRgb kEmptyPixel = qRgb(8, 13, 22);
+// A bucket normally contains several raw PSD bins.  Use a robust upper
+// percentile for the noise floor, while retaining an isolated strong peak.
+constexpr double kWaterfallNoiseQuantile = 0.85;
+constexpr float kWaterfallPeakDeviationDb = 6.0F;
+// Match the spectrum plot background so an empty waterfall does not appear as
+// a separate black panel before the first frame arrives.
+constexpr QRgb kEmptyPixel = qRgb(7, 24, 43);
 
 enum class RenderMode
 {
@@ -59,7 +53,7 @@ struct WaterfallRenderRequest final
     std::uint64_t frameSequence = 0;
     double viewStartHz = 0.0;
     double viewEndHz = 0.0;
-    double displayMinDb = -120.0;
+    double displayMinDb = -80.0;
     double displayMaxDb = 0.0;
     std::vector<algorithm::DisplaySnapshotPtr> rows;
     algorithm::DisplaySnapshotPtr newestSnapshot;
@@ -259,10 +253,10 @@ private:
         }
 
         const double displayMinDb = std::isfinite(request.displayMinDb)
-            ? request.displayMinDb : -120.0;
+            ? request.displayMinDb : -80.0;
         const double displayMaxDb = std::isfinite(request.displayMaxDb) &&
             request.displayMaxDb > displayMinDb
-            ? request.displayMaxDb : displayMinDb + 100.0;
+            ? request.displayMaxDb : displayMinDb + 80.0;
         const auto paletteIndex = [displayMinDb, displayMaxDb](float value) {
             if (!std::isfinite(value)) return 0;
             const double normalized = std::clamp(
@@ -275,6 +269,12 @@ private:
                                                0.0, 1.0);
             return 1 + std::clamp(static_cast<int>(contrast * 254.0 + 0.5), 0, 254);
         };
+        std::size_t maximumBucketSize = 1;
+        for (const auto& span : sourceSpans) {
+            maximumBucketSize = std::max(maximumBucketSize, span.second - span.first);
+        }
+        std::vector<float> bucketValues;
+        bucketValues.reserve(maximumBucketSize);
         const auto renderRow = [&](const algorithm::DisplaySnapshotPtr& snapshot,
                                    uchar* destination) {
             if (!snapshot || snapshot->frame.powerDb.empty()) return;
@@ -296,14 +296,25 @@ private:
                     std::max(rowBegin + 1,
                              (spanEnd * rowPointCount + pointCount - 1) / pointCount));
 
-                float peak = -std::numeric_limits<float>::infinity();
+                bucketValues.clear();
                 for (std::size_t index = rowBegin; index < rowEnd; ++index) {
                     if ((index & 255) == 0 && canceled()) return;
                     const float value = values[index];
-                    if (std::isfinite(value)) peak = std::max(peak, value);
+                    if (std::isfinite(value)) bucketValues.push_back(value);
                 }
-                if (std::isfinite(peak)) {
-                    destination[column] = static_cast<uchar>(paletteIndex(peak));
+                if (!bucketValues.empty()) {
+                    const auto peak = *std::max_element(bucketValues.begin(), bucketValues.end());
+                    const auto quantileIndex = static_cast<std::size_t>(
+                        std::floor((bucketValues.size() - 1) * kWaterfallNoiseQuantile));
+                    auto quantileIt = bucketValues.begin() + quantileIndex;
+                    std::nth_element(bucketValues.begin(), quantileIt, bucketValues.end());
+                    const float noiseLevel = *quantileIt;
+                    // Isolated peaks are retained for narrow-band signals;
+                    // ordinary noise excursions use the robust percentile so
+                    // the whole bucket is not brightened by one random bin.
+                    const float displayValue = peak - noiseLevel >= kWaterfallPeakDeviationDb
+                        ? peak : noiseLevel;
+                    destination[column] = static_cast<uchar>(paletteIndex(displayValue));
                 }
             }
         };
@@ -472,7 +483,7 @@ void WaterfallWidget::setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
     m_hasDisplayDomain = m_displayEndHz > m_displayStartHz;
     if (std::isfinite(frame.referenceLevelDbm)) {
         m_displayMaxDb = frame.referenceLevelDbm;
-        m_displayMinDb = frame.referenceLevelDbm - 100.0;
+        m_displayMinDb = frame.referenceLevelDbm - 80.0;
     }
     const bool sourceChanged = m_historyFrameLength != frame.powerDb.size() ||
         std::abs(m_historyStartFrequencyHz - frame.startFrequencyHz) > 0.5 ||
@@ -528,13 +539,21 @@ void WaterfallWidget::setDisplayDomain(double startHz, double endHz,
     m_hasDisplayDomain = true;
     if (std::isfinite(referenceLevelDbm)) {
         m_displayMaxDb = referenceLevelDbm;
-        m_displayMinDb = referenceLevelDbm - 100.0;
+        m_displayMinDb = referenceLevelDbm - 80.0;
     }
     if (!m_snapshot || !m_snapshot->frame.isValid() || !m_manualView) {
         m_viewStartHz = startHz;
         m_viewEndHz = endHz;
         m_viewInitialized = true;
         m_manualView = false;
+    } else {
+        const double fullWidth = endHz - startHz;
+        const double minimumWidth = std::min(fullWidth, std::max(fullWidth / 100000.0, 1.0));
+        const double viewWidth = std::clamp(m_viewEndHz - m_viewStartHz,
+                                            minimumWidth, fullWidth);
+        m_viewStartHz = std::clamp(m_viewStartHz, startHz, endHz - viewWidth);
+        m_viewEndHz = m_viewStartHz + viewWidth;
+        m_viewInitialized = true;
     }
     ++m_renderGeneration;
     ++m_viewGeneration;
@@ -626,14 +645,12 @@ void WaterfallWidget::acceptRenderedImage(std::uint64_t generation,
 
 QRectF WaterfallWidget::plotRect() const
 {
-    // Reserve a real bottom axis band.  Previously the waterfall bitmap used
-    // almost the whole widget and the frequency labels were painted on top of
-    // the last image rows, so the axis looked truncated or disappeared when
-    // the splitter was short.
+    // Frequency labels are carried by the navigator above the waterfall.  Do
+    // not reserve a second bottom frequency-axis band in this pane.
     const qreal left = 74.0;
     const qreal top = 24.0;
     const qreal right = std::max(left + 1.0, static_cast<qreal>(width() - 22));
-    const qreal bottom = std::max(top + 1.0, static_cast<qreal>(height() - 34));
+    const qreal bottom = std::max(top + 1.0, static_cast<qreal>(height() - 10));
     return QRectF(left, top, right - left, bottom - top);
 }
 
@@ -805,7 +822,7 @@ bool WaterfallWidget::canIncrementallyRender() const
     const double displayMaxDb = std::isfinite(m_snapshot->frame.referenceLevelDbm)
         ? m_snapshot->frame.referenceLevelDbm : 0.0;
     if (std::abs(m_renderedDisplayMaxDb - displayMaxDb) > 1e-9 ||
-        std::abs(m_renderedDisplayMinDb - (displayMaxDb - 100.0)) > 1e-9) {
+        std::abs(m_renderedDisplayMinDb - (displayMaxDb - 80.0)) > 1e-9) {
         return false;
     }
     return m_renderedFrameSequence != m_snapshot->frame.sequence;
@@ -824,12 +841,12 @@ void WaterfallWidget::resetHistory()
 void WaterfallWidget::paintEvent(QPaintEvent*)
 {
     if (!m_direct2D.begin(reinterpret_cast<void*>(winId()), size(), devicePixelRatioF(),
-                          QColor(5, 12, 22))) {
+                          QColor(7, 15, 27))) {
         return;
     }
     ensureImage();
     const QRectF plot = plotRect();
-    m_direct2D.fillRect(plot, QColor(5, 17, 31));
+    m_direct2D.fillRect(plot, QColor(7, 24, 43));
     m_direct2D.pushClip(plot);
     m_direct2D.drawImage(m_image, plot);
     m_direct2D.popClip();
@@ -837,15 +854,14 @@ void WaterfallWidget::paintEvent(QPaintEvent*)
     // Keep the grid as a foreground layer.  It must not share the waterfall
     // image clip/draw batch: on the Direct2D path the image may cover the
     // grid when the bitmap is recreated or tiled.
-    for (int index = 0; index <= 4; ++index) {
-        const qreal x = plot.left() + plot.width() * index / 4.0;
-        m_direct2D.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()),
-                            QColor(72, 116, 158), 1.6F);
-        const qreal y = plot.top() + plot.height() * index / 4.0;
-        m_direct2D.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y),
-                            QColor(61, 103, 145), 1.6F);
-    }
-    m_direct2D.drawRect(plot, QColor(88, 132, 173), 1.6F);
+    //for (int index = 0; index <= 4; ++index) {
+    //    const qreal x = plot.left() + plot.width() * index / 4.0;
+    //    m_direct2D.drawLine(QPointF(x, plot.top()), QPointF(x, plot.bottom()),
+    //                        QColor(72, 116, 158), 1.6F);
+    //    const qreal y = plot.top() + plot.height() * index / 4.0;
+    //    m_direct2D.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y),
+    //                        QColor(61, 103, 145), 1.6F);
+    //}
     m_direct2D.drawText(QStringLiteral("时频瀑布图"), QRectF(74, 4, width() - 96, 18),
                         QColor(177, 197, 218), 13.0F, Qt::AlignLeft);
     for (int index = 0; index <= 4; ++index) {
@@ -858,21 +874,6 @@ void WaterfallWidget::paintEvent(QPaintEvent*)
     }
     m_direct2D.drawText(QStringLiteral("帧数"), QRectF(8, 4, 56, 18),
                         QColor(128, 158, 187), 12.0F, Qt::AlignRight);
-
-    if (m_viewInitialized && m_viewEndHz > m_viewStartHz) {
-        for (int index = 0; index <= 4; ++index) {
-            const double frequencyHz = m_viewStartHz +
-                (m_viewEndHz - m_viewStartHz) * index / 4.0;
-            const qreal x = plot.left() + plot.width() * index / 4.0;
-            const qreal labelWidth = 150.0;
-            const qreal labelX = std::clamp(x - labelWidth / 2.0,
-                                            0.0, std::max<qreal>(0.0, width() - labelWidth));
-            m_direct2D.drawText(formatFrequencyLabel(frequencyHz),
-                                QRectF(labelX, plot.bottom() + 4.0, labelWidth, 22),
-                                QColor(157, 179, 201), 12.0F,
-                                Qt::AlignHCenter | Qt::AlignVCenter);
-        }
-    }
 
     if (m_hasSelection && m_viewInitialized) {
         const qreal selectedX = plot.left() + plot.width() *

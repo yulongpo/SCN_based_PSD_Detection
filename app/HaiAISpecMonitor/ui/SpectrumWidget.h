@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../algorithm/types/DisplayTypes.h"
+#include "../../../application/policy/PolicyTypes.h"
 #include "Direct2DChartRenderer.h"
 #include "SpectrumRenderWorker.h"
 
@@ -17,6 +18,7 @@ class QVariantAnimation;
 class QFrame;
 class QPushButton;
 class QPaintEngine;
+class QEnterEvent;
 
 namespace scn::app
 {
@@ -31,9 +33,11 @@ public:
 
 public slots:
     void setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot);
+    void setPolicySnapshot(const application::policy::PolicySnapshotPtr& snapshot);
     void setDisplayDomain(double startHz, double endHz, double referenceLevelDbm);
     void setFrequencyView(double startHz, double endHz);
     void setSelectedFrequency(double frequencyHz);
+    void resetFrequencyView();
     void resetView();
     void clear();
 
@@ -60,6 +64,8 @@ signals:
 protected:
     QPaintEngine* paintEngine() const override;
     void paintEvent(QPaintEvent* event) override;
+    void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
@@ -85,6 +91,7 @@ private:
     void stopViewAnimation();
     void buildTraceToolbar();
     void positionTraceToolbar();
+    void setTraceToolbarVisible(bool visible);
     void submitRenderRequest(bool interactivePreview);
     void requestFullRender();
     void acceptRenderResult(const SpectrumRenderResult& result);
@@ -94,6 +101,7 @@ private:
                               double viewStartHz, double viewEndHz) const;
 
     algorithm::DisplaySnapshotPtr m_snapshot;
+    application::policy::PolicySnapshotPtr m_policySnapshot;
     // Stable per raw frame: render-worker accumulation uses snapshot identity.
     algorithm::DisplaySnapshotPtr m_renderSnapshot;
     double m_viewStartHz = 0.0;
@@ -126,7 +134,7 @@ private:
     std::uint64_t m_renderedFrameSequence = 0;
     double m_renderedViewStartHz = 0.0;
     double m_renderedViewEndHz = 0.0;
-    double m_renderedDisplayMinDb = -120.0;
+    double m_renderedDisplayMinDb = -80.0;
     double m_renderedDisplayMaxDb = 0.0;
     int m_renderedPlotWidth = 0;
     int m_renderedPlotHeight = 0;
@@ -136,11 +144,11 @@ private:
     QPolygonF m_maxLower;
     QPolygonF m_averageUpper;
     QPolygonF m_averageLower;
-    double m_displayMinDb = -120.0;
+    double m_displayMinDb = -80.0;
     double m_displayMaxDb = 0.0;
     double m_displayStartHz = 0.0;
     double m_displayEndHz = 0.0;
-    double m_viewMinDb = -120.0;
+    double m_viewMinDb = -80.0;
     double m_viewMaxDb = 0.0;
     bool m_verticalViewInitialized = false;
     bool m_hasDisplayDomain = false;

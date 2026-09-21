@@ -18,3 +18,23 @@ if(WIN32)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE_DIR:scn_session_tests>
         COMMENT "Deploying Qt Core for user-run session tests" VERBATIM)
 endif()
+
+add_executable(scn_policy_tests PolicyTests.cpp)
+target_link_libraries(scn_policy_tests PRIVATE scn_application)
+add_test(NAME scn_policy COMMAND scn_policy_tests)
+set_tests_properties(scn_policy PROPERTIES TIMEOUT 30)
+
+add_executable(scn_policy_storage_tests PolicyStorageTests.cpp)
+target_link_libraries(scn_policy_storage_tests PRIVATE scn_application Qt6::Core Qt6::Sql)
+add_test(NAME scn_policy_storage COMMAND scn_policy_storage_tests)
+set_tests_properties(scn_policy_storage PROPERTIES TIMEOUT 30)
+if(WIN32)
+    add_custom_command(TARGET scn_policy_storage_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE_DIR:scn_policy_storage_tests>
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Sql> $<TARGET_FILE_DIR:scn_policy_storage_tests>
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:scn_policy_storage_tests>/sqldrivers
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${QT6_INSTALL_PREFIX}/plugins/sqldrivers/qsqlited.dll"
+            "$<TARGET_FILE_DIR:scn_policy_storage_tests>/sqldrivers/qsqlited.dll"
+        COMMENT "Deploying Qt SQL runtime for policy storage tests" VERBATIM)
+endif()

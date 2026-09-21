@@ -96,7 +96,7 @@ private:
     int m_renderedImageHeight = 0;
     std::size_t m_renderedHistoryCount = 0;
     std::uint64_t m_renderedFrameSequence = 0;
-    double m_renderedDisplayMinDb = -120.0;
+    double m_renderedDisplayMinDb = -80.0;
     double m_renderedDisplayMaxDb = 0.0;
     bool m_renderedInteractivePreview = false;
     QTimer* m_renderSettleTimer = nullptr;
@@ -106,7 +106,7 @@ private:
     double m_displayStartHz = 0.0;
     double m_displayEndHz = 0.0;
     double m_displayMaxDb = 0.0;
-    double m_displayMinDb = -100.0;
+    double m_displayMinDb = -80.0;
     bool m_hasDisplayDomain = false;
     double m_selectedFrequencyHz = 0.0;
     bool m_viewInitialized = false;

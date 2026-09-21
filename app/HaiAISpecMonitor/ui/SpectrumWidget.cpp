@@ -1,6 +1,7 @@
 #include "SpectrumWidget.h"
 
 #include <QAction>
+#include <QEnterEvent>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QMenu>
@@ -119,7 +120,7 @@ void SpectrumWidget::setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
         const bool displayRangeChanged =
             std::abs(newDisplayMaxDb - m_displayMaxDb) > 0.01;
         m_displayMaxDb = newDisplayMaxDb;
-        m_displayMinDb = m_displayMaxDb - 100.0;
+        m_displayMinDb = m_displayMaxDb - 80.0;
         if (displayRangeChanged || !m_verticalViewInitialized) {
             m_viewMinDb = m_displayMinDb;
             m_viewMaxDb = m_displayMaxDb;
@@ -149,6 +150,13 @@ void SpectrumWidget::setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
     update();
 }
 
+void SpectrumWidget::setPolicySnapshot(const application::policy::PolicySnapshotPtr& snapshot)
+{
+    if (m_policySnapshot == snapshot) return;
+    m_policySnapshot = snapshot;
+    update();
+}
+
 void SpectrumWidget::setDisplayDomain(double startHz, double endHz,
                                       double referenceLevelDbm)
 {
@@ -160,7 +168,7 @@ void SpectrumWidget::setDisplayDomain(double startHz, double endHz,
     m_hasDisplayDomain = true;
     if (std::isfinite(referenceLevelDbm)) {
         m_displayMaxDb = referenceLevelDbm;
-        m_displayMinDb = referenceLevelDbm - 100.0;
+        m_displayMinDb = referenceLevelDbm - 80.0;
     }
     m_viewMinDb = m_displayMinDb;
     m_viewMaxDb = m_displayMaxDb;
@@ -175,7 +183,20 @@ void SpectrumWidget::setDisplayDomain(double startHz, double endHz,
         m_viewStartHz = startHz;
         m_viewEndHz = endHz;
         m_viewInitialized = true;
-        applyView(m_viewStartHz, m_viewEndHz, false);
+    } else {
+        const double fullWidth = endHz - startHz;
+        const double minimumWidth = std::min(fullWidth, std::max(fullWidth / 100000.0, 1.0));
+        const double viewWidth = std::clamp(m_viewEndHz - m_viewStartHz,
+                                            minimumWidth, fullWidth);
+        const double previousStart = m_viewStartHz;
+        const double previousEnd = m_viewEndHz;
+        m_viewStartHz = std::clamp(m_viewStartHz, startHz, endHz - viewWidth);
+        m_viewEndHz = m_viewStartHz + viewWidth;
+        m_viewInitialized = true;
+        if (std::abs(previousStart - m_viewStartHz) > 0.01 ||
+            std::abs(previousEnd - m_viewEndHz) > 0.01) {
+            emit viewRangeChanged(m_viewStartHz, m_viewEndHz);
+        }
     }
     ++m_renderGeneration;
     if (m_renderWorker) m_renderWorker->reset(m_renderGeneration);
@@ -187,12 +208,22 @@ void SpectrumWidget::setDisplayDomain(double startHz, double endHz,
 void SpectrumWidget::setFrequencyView(double startHz, double endHz)
 {
     stopViewAnimation();
-    applyView(startHz, endHz, false);
+    applyView(startHz, endHz, true);
     // External view synchronization (MainWindow persistence or waterfall
     // coupling) must survive the next incoming frame as a manual view.
     m_manualView = true;
     submitRenderRequest(true);
     if (m_renderSettleTimer) m_renderSettleTimer->start();
+}
+
+void SpectrumWidget::resetFrequencyView()
+{
+    double startHz = 0.0;
+    double endHz = 0.0;
+    if (!fullRange(startHz, endHz)) return;
+    // Navigation restores only the horizontal frequency domain. The current
+    // vertical power range remains unchanged.
+    animateViewTo(startHz, endHz, false);
 }
 
 void SpectrumWidget::setSelectedFrequency(double frequencyHz)
@@ -227,6 +258,7 @@ void SpectrumWidget::clear()
     if (m_renderWorker) m_renderWorker->reset(m_renderGeneration);
     if (m_renderSettleTimer) m_renderSettleTimer->stop();
     m_snapshot.reset();
+    m_policySnapshot.reset();
     m_renderSnapshot.reset();
     m_viewInitialized = m_hasDisplayDomain && m_displayEndHz > m_displayStartHz;
     m_viewStartHz = m_displayStartHz;
@@ -583,6 +615,7 @@ void SpectrumWidget::buildTraceToolbar()
     m_traceToolbar->adjustSize();
     positionTraceToolbar();
     m_traceToolbar->raise();
+    m_traceToolbar->hide();
 }
 
 void SpectrumWidget::positionTraceToolbar()
@@ -594,6 +627,18 @@ void SpectrumWidget::positionTraceToolbar()
     const int y = std::max(0, static_cast<int>(plot.top()) + 6);
     m_traceToolbar->move(x, y);
     m_traceToolbar->raise();
+}
+
+void SpectrumWidget::setTraceToolbarVisible(bool visible)
+{
+    if (!m_traceToolbar) return;
+    if (visible) {
+        positionTraceToolbar();
+        m_traceToolbar->show();
+        m_traceToolbar->raise();
+    } else {
+        m_traceToolbar->hide();
+    }
 }
 
 void SpectrumWidget::submitRenderRequest(bool interactivePreview)
@@ -705,26 +750,30 @@ void SpectrumWidget::drawDetectionMarkers(Direct2DChartRenderer& renderer,
                                           const QRectF& plot,
                                           double viewStartHz, double viewEndHz) const
 {
-    if (!m_showDetectionMarkers || !m_snapshot ||
-        (m_snapshot->detection.stage != algorithm::DetectionStage::Accumulating &&
-         m_snapshot->detection.stage != algorithm::DetectionStage::Completed)) return;
+    if (!m_showDetectionMarkers || !m_snapshot || !m_policySnapshot ||
+        !m_snapshot->frame.isValid() ||
+        m_policySnapshot->generation != m_snapshot->detection.generation ||
+        m_policySnapshot->detectionConfigVersion != m_snapshot->detection.configVersion ||
+        m_policySnapshot->sequence > m_snapshot->frame.sequence) return;
     const double viewWidthHz = std::max(1.0, viewEndHz - viewStartHz);
     const double fullStartHz = m_snapshot->frame.startFrequencyHz;
     const double fullEndHz = m_snapshot->frame.endFrequencyHz();
 
-    for (const auto& detection : m_snapshot->detection.detections) {
+    for (const auto& businessSignal : m_policySnapshot->businessSignals) {
+        const auto& detection = businessSignal.measurement;
         const double startHz = std::max({detection.startFrequencyHz, fullStartHz, viewStartHz});
         const double endHz = std::min({detection.endFrequencyHz, fullEndHz, viewEndHz});
         if (!(endHz > startHz)) continue;
 
-        const QColor color(10, 140, 254);
+        const QColor color = businessSignal.source == application::policy::PolicySignalSource::Whitelist
+            ? QColor(255, 190, 48) : QColor(10, 140, 254);
         const qreal left = plot.left() + plot.width() * (startHz - viewStartHz) / viewWidthHz;
         const qreal right = plot.left() + plot.width() * (endHz - viewStartHz) / viewWidthHz;
         QRectF marker(left, plot.top() + 5.0,
                       std::max<qreal>(3.0, right - left), plot.height() - 10.0);
         renderer.fillRect(marker, QColor(color.red(), color.green(), color.blue(), 24));
         renderer.drawRect(marker, color, 1.0F);
-        renderer.drawText(QStringLiteral("ID %1").arg(detection.id),
+        renderer.drawText(QString::fromStdString(businessSignal.displayId),
                           QRectF(marker.left() + 4.0, marker.top() + 3.0,
                                  std::max<qreal>(0.0, marker.width() - 8.0), 17.0),
                           color.lighter(125), 12.0F, Qt::AlignLeft);
@@ -902,6 +951,23 @@ void SpectrumWidget::paintEvent(QPaintEvent*)
         }
     }
     m_direct2D.end();
+}
+
+void SpectrumWidget::enterEvent(QEnterEvent* event)
+{
+    QWidget::enterEvent(event);
+    setTraceToolbarVisible(true);
+}
+
+void SpectrumWidget::leaveEvent(QEvent* event)
+{
+    QWidget::leaveEvent(event);
+    // Defer the hit test by one event turn so moving between the chart and
+    // its child toolbar does not briefly hide the controls.
+    QTimer::singleShot(0, this, [this] {
+        const QPoint localPosition = mapFromGlobal(QCursor::pos());
+        if (!rect().contains(localPosition)) setTraceToolbarVisible(false);
+    });
 }
 
 void SpectrumWidget::resizeEvent(QResizeEvent* event)

@@ -1,4 +1,5 @@
 #include "SettingsPage.h"
+#include "FrequencySpinBox.h"
 
 #include <QAbstractItemView>
 #include <QButtonGroup>
@@ -19,13 +20,18 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStyledItemDelegate>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextStream>
 #include <QToolButton>
 #include <QVBoxLayout>
+#include <QMessageBox>
+
+#include "../../../application/policy/PolicyRepository.h"
 
 #include <limits>
+#include <algorithm>
 
 namespace scn::app
 {
@@ -55,6 +61,49 @@ QWidget* formContainer(QWidget* parent)
     widget->setObjectName(QStringLiteral("settingsCard"));
     return widget;
 }
+
+class FrequencyItemDelegate final : public QStyledItemDelegate
+{
+public:
+    explicit FrequencyItemDelegate(QObject* parent = nullptr)
+        : QStyledItemDelegate(parent)
+    {
+    }
+
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&,
+                           const QModelIndex&) const override
+    {
+        auto* editor = new FrequencySpinBox(parent);
+        editor->setRange(0.0, 6.4e9);
+        editor->setDecimals(6);
+        editor->setMinimumWidth(150);
+        auto* delegate = const_cast<FrequencyItemDelegate*>(this);
+        connect(editor, &QDoubleSpinBox::editingFinished, delegate, [delegate, editor] {
+            emit delegate->commitData(editor);
+            emit delegate->closeEditor(editor);
+        });
+        return editor;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& index) const override
+    {
+        auto* frequencyEditor = dynamic_cast<FrequencySpinBox*>(editor);
+        if (!frequencyEditor) return;
+        double value = 0.0;
+        if (FrequencySpinBox::parseFrequencyText(index.data(Qt::EditRole).toString(), value))
+            frequencyEditor->setValue(value);
+    }
+
+    void setModelData(QWidget* editor, QAbstractItemModel* model,
+                      const QModelIndex& index) const override
+    {
+        auto* frequencyEditor = dynamic_cast<FrequencySpinBox*>(editor);
+        if (!frequencyEditor) return;
+        frequencyEditor->interpretText();
+        model->setData(index, FrequencySpinBox::formatFrequency(frequencyEditor->value()),
+                       Qt::EditRole);
+    }
+};
 }
 
 SettingsPage::SettingsPage(QWidget* parent)
@@ -62,6 +111,12 @@ SettingsPage::SettingsPage(QWidget* parent)
 {
     buildUi();
     loadDetectionConfig();
+    loadPolicyConfig();
+}
+
+int SettingsPage::displayRefreshRateHz() const
+{
+    return m_displayRate ? m_displayRate->value() : 30;
 }
 
 void SettingsPage::buildUi()
@@ -72,7 +127,9 @@ void SettingsPage::buildUi()
 
     auto* nav = new QHBoxLayout;
     const QStringList names = {QStringLiteral("显示"), QStringLiteral("存储"),
-                               QStringLiteral("规则"), QStringLiteral("推送"),
+                               QStringLiteral("白名单"), QStringLiteral("告警规则"),
+                               QStringLiteral("告警历史"),
+                               QStringLiteral("推送"),
                                QStringLiteral("日志"), QStringLiteral("帮助"),
                                QStringLiteral("SCN 检测")};
     auto* group = new QButtonGroup(this);
@@ -88,7 +145,9 @@ void SettingsPage::buildUi()
     m_stack = new QStackedWidget(this);
     m_stack->addWidget(buildDisplayPage());
     m_stack->addWidget(buildStoragePage());
+    m_stack->addWidget(buildWhitelistPage());
     m_stack->addWidget(buildRulePage());
+    m_stack->addWidget(buildHistoryPage());
     m_stack->addWidget(buildPushPage());
     m_stack->addWidget(buildLogPage());
     m_stack->addWidget(buildHelpPage());
@@ -120,6 +179,23 @@ QWidget* SettingsPage::buildDisplayPage()
     auto* waterfall = new QCheckBox(QStringLiteral("显示瀑布图"), card);
     waterfall->setChecked(true);
     form->addRow(QStringLiteral("瀑布图"), waterfall);
+    m_displayRate = new QSpinBox(card);
+    m_displayRate->setRange(1, 120);
+    m_displayRate->setValue(30);
+    m_displayRate->setSuffix(QStringLiteral(" fps"));
+    m_displayRate->setMinimumWidth(120);
+    m_displayRate->setToolTip(QStringLiteral(
+        "设置界面和会话结果发布频率；数据源采集频率由源参数单独控制。"));
+    form->addRow(QStringLiteral("显示刷新"), m_displayRate);
+    const QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+    m_displayRate->setValue(settings.value(QStringLiteral("ui/displayRefreshRateHz"), 30).toInt());
+    connect(m_displayRate, qOverload<int>(&QSpinBox::valueChanged), this, [this](int rateHz) {
+        const int safeRateHz = std::clamp(rateHz, 1, 120);
+        QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+        settings.setValue(QStringLiteral("ui/displayRefreshRateHz"), safeRateHz);
+        settings.sync();
+        emit displayRefreshRateChanged(safeRateHz);
+    });
     auto* rows = new QSpinBox(card);
     rows->setRange(50, 2000);
     rows->setValue(100);
@@ -193,7 +269,11 @@ QWidget* SettingsPage::buildDetectionPage()
     m_cnr = decimal(QStringLiteral("CNR 门限（dB）"), -1000.0, 1000.0);
     m_fusionIou = decimal(QStringLiteral("融合 IoU"), 0.0001, 1.0);
     m_fusionOverlap = decimal(QStringLiteral("融合重叠率"), 0.0001, 1.0);
-    m_fusionGap = decimal(QStringLiteral("融合间隔（Hz）"), 0.0, 1.0e12);
+    m_fusionGap = new FrequencySpinBox(card);
+    m_fusionGap->setRange(0.0, 6.4e9);
+    m_fusionGap->setDecimals(6);
+    m_fusionGap->setMinimumWidth(150);
+    form->addRow(QStringLiteral("融合间隔"), m_fusionGap);
     m_trackOverlap = decimal(QStringLiteral("跟踪重叠率"), 0.0001, 1.0);
     m_maxMiss = decimal(QStringLiteral("最大漏检时间（秒）"), 0.0, 3600.0);
     m_maxSignals = integer(QStringLiteral("最大信号数"), 1, 65536);
@@ -356,31 +436,102 @@ QWidget* SettingsPage::buildStoragePage()
     return page;
 }
 
+QWidget* SettingsPage::buildWhitelistPage()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* toolbar = new QHBoxLayout;
+    toolbar->addWidget(new QLabel(QStringLiteral("白名单（命中后替换为配置频段，不抑制告警）"), page));
+    toolbar->addStretch();
+    auto* add = actionButton(QStringLiteral("新增"), page);
+    auto* remove = actionButton(QStringLiteral("删除"), page);
+    auto* import = actionButton(QStringLiteral("导入"), page);
+    auto* exportButton = actionButton(QStringLiteral("导出"), page);
+    toolbar->addWidget(add); toolbar->addWidget(remove);
+    toolbar->addWidget(import); toolbar->addWidget(exportButton);
+    layout->addLayout(toolbar);
+    m_whitelistTable = new QTableWidget(0, 5, page);
+    m_whitelistTable->setObjectName(QStringLiteral("isaTable"));
+    m_whitelistTable->setHorizontalHeaderLabels({QStringLiteral("名称"), QStringLiteral("起始频率"),
+        QStringLiteral("终止频率"), QStringLiteral("启用"), QStringLiteral("备注")});
+    m_whitelistTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_whitelistTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_whitelistTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_whitelistTable->setEditTriggers(QAbstractItemView::DoubleClicked |
+                                      QAbstractItemView::EditKeyPressed);
+    auto* whitelistFrequencyDelegate = new FrequencyItemDelegate(m_whitelistTable);
+    m_whitelistTable->setItemDelegateForColumn(1, whitelistFrequencyDelegate);
+    m_whitelistTable->setItemDelegateForColumn(2, whitelistFrequencyDelegate);
+    layout->addWidget(m_whitelistTable, 1);
+    auto* apply = actionButton(QStringLiteral("应用白名单与告警规则"), page);
+    layout->addWidget(apply, 0, Qt::AlignRight);
+    connect(add, &QPushButton::clicked, this, &SettingsPage::addWhitelist);
+    connect(remove, &QPushButton::clicked, this, &SettingsPage::removeWhitelist);
+    connect(import, &QPushButton::clicked, this, &SettingsPage::importPolicy);
+    connect(exportButton, &QPushButton::clicked, this, &SettingsPage::exportPolicy);
+    connect(apply, &QPushButton::clicked, this, &SettingsPage::applyPolicy);
+    return page;
+}
+
 QWidget* SettingsPage::buildRulePage()
 {
     auto* page = new QWidget(this);
     auto* layout = new QVBoxLayout(page);
     layout->setContentsMargins(0, 0, 0, 0);
     auto* toolbar = new QHBoxLayout;
-    toolbar->addWidget(new QLabel(QStringLiteral("告警规则"), page));
+    toolbar->addWidget(new QLabel(QStringLiteral("告警规则（相交匹配，最高等级生效）"), page));
     toolbar->addStretch();
     auto* add = actionButton(QStringLiteral("新增规则"), page);
     auto* remove = actionButton(QStringLiteral("删除规则"), page);
+    auto* import = actionButton(QStringLiteral("导入"), page);
+    auto* exportButton = actionButton(QStringLiteral("导出"), page);
     toolbar->addWidget(add);
     toolbar->addWidget(remove);
+    toolbar->addWidget(import);
+    toolbar->addWidget(exportButton);
     layout->addLayout(toolbar);
-    m_ruleTable = new QTableWidget(0, 7, page);
+    m_ruleTable = new QTableWidget(0, 13, page);
     m_ruleTable->setObjectName(QStringLiteral("isaTable"));
-    m_ruleTable->setHorizontalHeaderLabels({QStringLiteral("规则名称"), QStringLiteral("频率范围"),
-        QStringLiteral("带宽范围"), QStringLiteral("信号类型"), QStringLiteral("告警等级"),
-        QStringLiteral("启用"), QStringLiteral("备注")});
+    m_ruleTable->setHorizontalHeaderLabels({QStringLiteral("规则名称"), QStringLiteral("起始频率"),
+        QStringLiteral("终止频率"), QStringLiteral("最小带宽"), QStringLiteral("最大带宽"),
+        QStringLiteral("最小电平(dBm)"), QStringLiteral("最小 CNR(dB)"), QStringLiteral("最小置信度"),
+        QStringLiteral("等级"), QStringLiteral("连续次数"), QStringLiteral("持续(s)"),
+        QStringLiteral("解除(s)"), QStringLiteral("启用")});
     m_ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     m_ruleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_ruleTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_ruleTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
+    auto* ruleFrequencyDelegate = new FrequencyItemDelegate(m_ruleTable);
+    for (int column = 1; column <= 4; ++column)
+        m_ruleTable->setItemDelegateForColumn(column, ruleFrequencyDelegate);
     layout->addWidget(m_ruleTable, 1);
     connect(add, &QPushButton::clicked, this, &SettingsPage::addRule);
     connect(remove, &QPushButton::clicked, this, &SettingsPage::removeRule);
+    connect(import, &QPushButton::clicked, this, &SettingsPage::importPolicy);
+    connect(exportButton, &QPushButton::clicked, this, &SettingsPage::exportPolicy);
+    auto* apply = actionButton(QStringLiteral("应用白名单与告警规则"), page);
+    layout->addWidget(apply, 0, Qt::AlignRight);
+    connect(apply, &QPushButton::clicked, this, &SettingsPage::applyPolicy);
+    return page;
+}
+
+QWidget* SettingsPage::buildHistoryPage()
+{
+    auto* page = new QWidget(this);
+    auto* layout = new QVBoxLayout(page);
+    layout->setContentsMargins(0, 0, 0, 0);
+    auto* card = formContainer(page);
+    auto* form = new QFormLayout(card);
+    form->setContentsMargins(22, 22, 22, 22);
+    form->addRow(new QLabel(QStringLiteral("本地告警历史"), card));
+    form->addRow(QStringLiteral("存储方式"), new QLabel(QStringLiteral("SQLite（事件状态可追溯）"), card));
+    form->addRow(QStringLiteral("匹配语义"), new QLabel(QStringLiteral("频段相交且端点相接即命中；白名单不抑制告警"), card));
+    auto* view = actionButton(QStringLiteral("查询 / 确认 / 导出历史"), card);
+    form->addRow(QString(), view);
+    connect(view, &QPushButton::clicked, this, &SettingsPage::alarmHistoryRequested);
+    layout->addWidget(card, 0, Qt::AlignTop);
+    layout->addStretch();
     return page;
 }
 
@@ -444,7 +595,8 @@ QWidget* SettingsPage::buildHelpPage()
         "系统设置：管理显示、存储、告警规则、推送、日志和 SCN 检测参数。\n\n"
         "SCN 使用 TensorRT engine，默认独立累计 16 帧；界面最大值／平均值仍为 100 帧。\n"
         "更换模型、GPU 或切换检测开关需先停止监测。模型故障时原始频谱仍可查看。\n"
-        "信号表展示最新检测观测，双击可查看置信度、CNR、分支和跟踪时间；信号类型未分类，告警未接入。\n"
+        "信号表展示白名单整理后的业务结果，双击可查看代表检测值、归并原始 ID、白名单和告警状态；信号类型未分类。\n"
+        "命中白名单的原始结果会替换为配置频段，不会免除告警；告警历史保存在应用目录 config/policy.sqlite。\n"
         "FILE 时间标为回放逻辑时间，硬件时间标为本轮相对时间。\n"
         "当前版本：Qt 6.11.1 / VS 2026。"));
     layout->addWidget(text);
@@ -460,11 +612,16 @@ void SettingsPage::addRule()
 {
     const int row = m_ruleTable->rowCount();
     m_ruleTable->insertRow(row);
-    const QStringList values = {QStringLiteral("新规则"), QStringLiteral("全频段"),
-        QStringLiteral("0 - 10000 kHz"), QStringLiteral("未知"), QStringLiteral("一般"),
-        QStringLiteral("是"), QStringLiteral("待配置")};
+    const QStringList values = {QStringLiteral("新规则"), FrequencySpinBox::formatFrequency(0.0),
+        FrequencySpinBox::formatFrequency(1.0e9), FrequencySpinBox::formatFrequency(0.0),
+        FrequencySpinBox::formatFrequency(0.0), QStringLiteral("—"), QStringLiteral("—"),
+        QStringLiteral("—"), QStringLiteral("一般"), QStringLiteral("1"), QStringLiteral("0"),
+        QStringLiteral("1"), QStringLiteral("是")};
     for (int column = 0; column < values.size(); ++column)
         m_ruleTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+    qlonglong nextId = 1;
+    for (int i = 0; i < row; ++i) nextId = std::max(nextId, m_ruleTable->item(i, 0)->data(Qt::UserRole).toLongLong() + 1);
+    m_ruleTable->item(row, 0)->setData(Qt::UserRole, nextId);
     appendLog(QStringLiteral("新增一条告警规则。"));
 }
 
@@ -474,6 +631,180 @@ void SettingsPage::removeRule()
     if (row < 0) return;
     m_ruleTable->removeRow(row);
     appendLog(QStringLiteral("删除一条告警规则。"));
+}
+
+void SettingsPage::addWhitelist()
+{
+    const int row = m_whitelistTable->rowCount();
+    m_whitelistTable->insertRow(row);
+    const QStringList values = {QStringLiteral("新白名单"), FrequencySpinBox::formatFrequency(0.0),
+        FrequencySpinBox::formatFrequency(1.0e9), QStringLiteral("是"), QString()};
+    for (int column = 0; column < values.size(); ++column)
+        m_whitelistTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+    qlonglong nextId = 1;
+    for (int i = 0; i < row; ++i) nextId = std::max(nextId, m_whitelistTable->item(i, 0)->data(Qt::UserRole).toLongLong() + 1);
+    m_whitelistTable->item(row, 0)->setData(Qt::UserRole, nextId);
+    appendLog(QStringLiteral("新增一条白名单。"));
+}
+
+void SettingsPage::removeWhitelist()
+{
+    const int row = m_whitelistTable->currentRow();
+    if (row < 0) return;
+    m_whitelistTable->removeRow(row);
+    appendLog(QStringLiteral("删除一条白名单。"));
+}
+
+policy::PolicyConfig SettingsPage::policyConfig(QString* error) const
+{
+    policy::PolicyConfig config;
+    config.version = static_cast<std::uint64_t>(QSettings().value(QStringLiteral("policy/version"), 1).toULongLong());
+    auto parse = [](const QTableWidget* table, int row, int column, double fallback = 0.0) {
+        const auto text = table->item(row, column) ? table->item(row, column)->text() : QString();
+        double value = fallback;
+        return FrequencySpinBox::parseFrequencyText(text, value)
+            ? value : std::numeric_limits<double>::quiet_NaN();
+    };
+    for (int row = 0; row < m_whitelistTable->rowCount(); ++row) {
+        policy::WhitelistEntry item;
+        item.id = m_whitelistTable->item(row, 0)->data(Qt::UserRole).toLongLong();
+        if (item.id == 0) item.id = row + 1;
+        item.name = m_whitelistTable->item(row, 0)->text().toStdString();
+        item.startFrequencyHz = parse(m_whitelistTable, row, 1);
+        item.endFrequencyHz = parse(m_whitelistTable, row, 2);
+        item.enabled = m_whitelistTable->item(row, 3)->text().trimmed() != QStringLiteral("否");
+        item.note = m_whitelistTable->item(row, 4)->text().toStdString();
+        config.whitelists.push_back(std::move(item));
+    }
+    auto parseOptional = [&](const QTableWidget* table, int row, int column, bool& enabled) {
+        const auto text = table->item(row, column) ? table->item(row, column)->text().trimmed() : QString();
+        if (text.isEmpty() || text == QStringLiteral("—") || text == QStringLiteral("-")) {
+            enabled = false; return 0.0;
+        }
+        bool ok = false; const double value = text.toDouble(&ok);
+        enabled = true; return ok ? value : std::numeric_limits<double>::quiet_NaN();
+    };
+    for (int row = 0; row < m_ruleTable->rowCount(); ++row) {
+        policy::AlarmRule rule;
+        rule.id = m_ruleTable->item(row, 0)->data(Qt::UserRole).toLongLong();
+        if (rule.id == 0) rule.id = row + 1;
+        rule.name = m_ruleTable->item(row, 0)->text().toStdString();
+        rule.startFrequencyHz = parse(m_ruleTable, row, 1);
+        rule.endFrequencyHz = parse(m_ruleTable, row, 2);
+        rule.minBandwidthHz = parse(m_ruleTable, row, 3);
+        rule.maxBandwidthHz = parse(m_ruleTable, row, 4);
+        rule.minSignalLevelDbm = static_cast<float>(parseOptional(m_ruleTable, row, 5, rule.useMinSignalLevel));
+        rule.minCnrDb = static_cast<float>(parseOptional(m_ruleTable, row, 6, rule.useMinCnr));
+        rule.minConfidence = static_cast<float>(parseOptional(m_ruleTable, row, 7, rule.useMinConfidence));
+        rule.level = m_ruleTable->item(row, 8)->text().contains(QStringLiteral("严重"))
+            ? policy::AlarmLevel::Critical : policy::AlarmLevel::General;
+        rule.consecutiveHits = static_cast<std::uint32_t>(m_ruleTable->item(row, 9)->text().toUInt());
+        rule.minDurationSeconds = parse(m_ruleTable, row, 10);
+        rule.clearDelaySeconds = parse(m_ruleTable, row, 11);
+        rule.enabled = m_ruleTable->item(row, 12)->text().trimmed() != QStringLiteral("否");
+        config.alarmRules.push_back(std::move(rule));
+    }
+    std::string validationError;
+    if (!policy::PolicyRepository::validate(config, validationError) && error)
+        *error = QString::fromStdString(validationError);
+    return config;
+}
+
+void SettingsPage::populatePolicyTables(const policy::PolicyConfig& config)
+{
+    m_whitelistTable->setRowCount(0);
+    for (const auto& item : config.whitelists) {
+        const int row = m_whitelistTable->rowCount(); m_whitelistTable->insertRow(row);
+        const QStringList values = {QString::fromStdString(item.name),
+            FrequencySpinBox::formatFrequency(item.startFrequencyHz),
+            FrequencySpinBox::formatFrequency(item.endFrequencyHz),
+            item.enabled ? QStringLiteral("是") : QStringLiteral("否"),
+            QString::fromStdString(item.note)};
+        for (int column = 0; column < values.size(); ++column)
+            m_whitelistTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+        m_whitelistTable->item(row, 0)->setData(Qt::UserRole, item.id);
+    }
+    m_ruleTable->setRowCount(0);
+    for (const auto& rule : config.alarmRules) {
+        const int row = m_ruleTable->rowCount(); m_ruleTable->insertRow(row);
+        const QStringList values = {QString::fromStdString(rule.name),
+            FrequencySpinBox::formatFrequency(rule.startFrequencyHz),
+            FrequencySpinBox::formatFrequency(rule.endFrequencyHz),
+            FrequencySpinBox::formatFrequency(rule.minBandwidthHz),
+            FrequencySpinBox::formatFrequency(rule.maxBandwidthHz),
+            rule.useMinSignalLevel ? QString::number(rule.minSignalLevelDbm, 'f', 3) : QStringLiteral("—"),
+            rule.useMinCnr ? QString::number(rule.minCnrDb, 'f', 3) : QStringLiteral("—"),
+            rule.useMinConfidence ? QString::number(rule.minConfidence, 'f', 3) : QStringLiteral("—"),
+            rule.level == policy::AlarmLevel::Critical ? QStringLiteral("严重") : QStringLiteral("一般"),
+            QString::number(rule.consecutiveHits), QString::number(rule.minDurationSeconds, 'f', 3),
+            QString::number(rule.clearDelaySeconds, 'f', 3), rule.enabled ? QStringLiteral("是") : QStringLiteral("否")};
+        for (int column = 0; column < values.size(); ++column)
+            m_ruleTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+        m_ruleTable->item(row, 0)->setData(Qt::UserRole, rule.id);
+    }
+    QSettings settings; settings.setValue(QStringLiteral("policy/version"), static_cast<qulonglong>(config.version));
+}
+
+void SettingsPage::loadPolicyConfig()
+{
+    policy::PolicyConfig config; std::string error;
+    if (!policy::PolicyRepository::load(policy::PolicyRepository::defaultPath(), config, error)) {
+        appendLog(QStringLiteral("告警规则加载失败：%1").arg(QString::fromStdString(error)));
+        return;
+    }
+    populatePolicyTables(config);
+}
+
+bool SettingsPage::savePolicyConfig(const policy::PolicyConfig& config, QString* error)
+{
+    std::string reason;
+    if (!policy::PolicyRepository::save(policy::PolicyRepository::defaultPath(), config, reason)) {
+        const auto message = QString::fromStdString(reason);
+        if (error) *error = message;
+        appendLog(QStringLiteral("告警规则保存失败：%1").arg(message));
+        return false;
+    }
+    populatePolicyTables(config);
+    if (error) error->clear();
+    return true;
+}
+
+bool SettingsPage::acceptPolicyConfig(const policy::PolicyConfig& config, QString* error)
+{
+    return savePolicyConfig(config, error);
+}
+
+void SettingsPage::applyPolicy()
+{
+    QString error;
+    const auto config = policyConfig(&error);
+    if (!error.isEmpty()) {
+        QMessageBox::warning(this, QStringLiteral("规则参数无效"), error);
+        return;
+    }
+    emit policyApplyRequested();
+    appendLog(QStringLiteral("已提交白名单与告警规则版本 %1。").arg(config.version));
+}
+
+void SettingsPage::importPolicy()
+{
+    const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("导入规则"), QString(), QStringLiteral("JSON files (*.json)"));
+    if (path.isEmpty()) return;
+    policy::PolicyConfig config; std::string error;
+    if (!policy::PolicyRepository::load(path.toStdString(), config, error)) {
+        QMessageBox::warning(this, QStringLiteral("导入失败"), QString::fromStdString(error)); return;
+    }
+    populatePolicyTables(config); appendLog(QStringLiteral("已导入规则草稿。请点击应用。"));
+}
+
+void SettingsPage::exportPolicy()
+{
+    const auto path = QFileDialog::getSaveFileName(this, QStringLiteral("导出规则"), QStringLiteral("policy.json"), QStringLiteral("JSON files (*.json)"));
+    if (path.isEmpty()) return;
+    QString error; const auto config = policyConfig(&error); if (!error.isEmpty()) return;
+    std::string reason;
+    if (!policy::PolicyRepository::save(path.toStdString(), config, reason))
+        QMessageBox::warning(this, QStringLiteral("导出失败"), QString::fromStdString(reason));
 }
 
 void SettingsPage::applyStorage()

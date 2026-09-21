@@ -1,12 +1,16 @@
 #pragma once
 #include "../algorithm/DetectionEngine/DetectionEngine.h"
 #include "../runtime/BoundedChannel.h"
+#include "policy/PolicyEngine.h"
+#include "policy/PolicyTypes.h"
+#include "policy/AlarmHistoryStore.h"
 #include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <thread>
 #include <chrono>
+#include <deque>
 
 namespace scn::application
 {
@@ -32,6 +36,10 @@ public:
     bool drained(std::uint64_t epoch) const;
     algorithm::ConfigApplyResult configureDetection(const algorithm::DetectionConfig& config);
     algorithm::DetectionConfig detectionConfig() const;
+    bool configurePolicy(const policy::PolicyConfig& config, std::string& error);
+    policy::PolicyConfig policyConfig() const;
+    bool acknowledgeAlarm(const std::string& eventId, const std::string& note);
+    bool loadAlarmHistory(std::vector<policy::AlarmEvent>& events, std::string& error) const;
     bool submit(std::shared_ptr<const algorithm::SpectrumFrame> frame, std::uint64_t epoch, bool live);
     void shutdown();
 
@@ -44,14 +52,22 @@ public:
     std::condition_variable changed;
     std::shared_ptr<const algorithm::SpectrumFrame> latestFrame;
     std::shared_ptr<const algorithm::DetectionResult> latestResult;
+    policy::PolicySnapshotPtr latestPolicy;
+    std::vector<policy::AlarmEventChange> pendingAlarmChanges;
+    std::uint64_t policyRevision = 0;
     std::uint64_t revision = 0;
 private:
     void detectLoop();
     algorithm::DetectionConfig m_config;
+    policy::PolicyConfig m_policyConfig;
+    std::uint64_t m_policyVersion = 0;
+    struct PendingAcknowledgement { std::string eventId; std::string note; };
+    std::deque<PendingAcknowledgement> m_pendingAcknowledgements;
     bool m_hasCompletedFrame = false;
     std::uint64_t m_completedSequence = 0;
     StatusSink m_status;
     std::unique_ptr<algorithm::IScnBackend> m_backend;
+    policy::AlarmHistoryStore m_history;
     std::thread m_thread;
 };
 }

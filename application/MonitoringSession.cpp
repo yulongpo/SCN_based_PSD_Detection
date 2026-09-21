@@ -134,6 +134,8 @@ private:
 MonitoringSession::MonitoringSession(QObject* parent) : QObject(parent)
 {
     qRegisterMetaType<algorithm::DisplaySnapshotPtr>("scn::algorithm::DisplaySnapshotPtr");
+    qRegisterMetaType<policy::PolicySnapshotPtr>("scn::application::policy::PolicySnapshotPtr");
+    qRegisterMetaType<std::vector<policy::AlarmEventChange>>("scn::application::policy::AlarmEvents");
     m_pipeline = std::make_unique<SessionPipeline>([this](std::uint64_t control, std::uint64_t version, const std::string& status) {
         const auto text = QString::fromStdString(status);
         QMetaObject::invokeMethod(this, [this, control, version, text] {
@@ -157,10 +159,10 @@ MonitoringSession::MonitoringSession(QObject* parent) : QObject(parent)
             if (epoch == m_pipeline->controlGeneration) emit deviceStatusChanged(device, status, connected);
         }, Qt::QueuedConnection);
     m_workerThread.start();
-    auto* timer = new QTimer(this);
-    timer->setInterval(33);
-    connect(timer, &QTimer::timeout, this, &MonitoringSession::publishLatest);
-    timer->start();
+    m_publishTimer = new QTimer(this);
+    m_publishTimer->setInterval(1000 / m_publicationRateHz);
+    connect(m_publishTimer, &QTimer::timeout, this, &MonitoringSession::publishLatest);
+    m_publishTimer->start();
 }
 
 MonitoringSession::~MonitoringSession()
@@ -171,6 +173,12 @@ MonitoringSession::~MonitoringSession()
     m_workerThread.wait(); // Only destruction joins; ordinary stop never blocks the UI.
     m_pipeline->shutdown();
     m_worker = nullptr;
+}
+
+void MonitoringSession::setPublicationRateHz(int rateHz)
+{
+    m_publicationRateHz = std::clamp(rateHz, 1, 120);
+    if (m_publishTimer) m_publishTimer->setInterval(1000 / m_publicationRateHz);
 }
 
 void MonitoringSession::configure(const source::SourceConfig& config)
@@ -194,6 +202,33 @@ algorithm::ConfigApplyResult MonitoringSession::configureDetection(const algorit
     if (result == algorithm::ConfigApplyResult::RequiresRestart && m_pipeline->active)
         emit detectionStatusChanged(QStringLiteral("请先停止监测，再更换模型、GPU 或切换检测开关。"));
     return result;
+}
+
+bool MonitoringSession::configurePolicy(const policy::PolicyConfig& config, QString& error)
+{
+    std::string reason;
+    const bool ok = m_pipeline->configurePolicy(config, reason);
+    error = QString::fromStdString(reason);
+    if (ok) emit policyStatusChanged(QStringLiteral("白名单与告警规则已提交，版本 %1").arg(config.version));
+    return ok;
+}
+
+policy::PolicyConfig MonitoringSession::policyConfig() const
+{
+    return m_pipeline->policyConfig();
+}
+
+bool MonitoringSession::acknowledgeAlarm(const QString& eventId, const QString& note)
+{
+    return m_pipeline->acknowledgeAlarm(eventId.toStdString(), note.toStdString());
+}
+
+bool MonitoringSession::loadAlarmHistory(std::vector<policy::AlarmEvent>& events, QString& error) const
+{
+    std::string reason;
+    const bool ok = m_pipeline->loadAlarmHistory(events, reason);
+    error = QString::fromStdString(reason);
+    return ok;
 }
 
 void MonitoringSession::start()
@@ -222,30 +257,41 @@ void MonitoringSession::publishLatest()
 {
     std::shared_ptr<const algorithm::SpectrumFrame> frame;
     std::shared_ptr<const algorithm::DetectionResult> result;
-    std::uint64_t epoch, version;
+    std::uint64_t epoch, version, policyRevision;
+    policy::PolicySnapshotPtr policySnapshot;
+    std::vector<policy::AlarmEventChange> alarmChanges;
     {
         std::lock_guard<std::mutex> lock(m_pipeline->mutex);
         if (m_publishedRevision == m_pipeline->revision) return;
         m_publishedRevision = m_pipeline->revision;
         frame = m_pipeline->latestFrame; result = m_pipeline->latestResult;
         epoch = m_pipeline->generation; version = m_pipeline->configVersion;
+        policyRevision = m_pipeline->policyRevision;
+        policySnapshot = m_pipeline->latestPolicy;
+        alarmChanges.swap(m_pipeline->pendingAlarmChanges);
     }
-    if (!frame) return; // Preserve stopped image; starting/source change clears it in MainWindow.
-    auto snapshot = std::make_shared<algorithm::DisplaySnapshot>();
-    snapshot->frame = *frame; // At most one raw-frame copy per 33 ms publication.
-    snapshot->detection.generation = epoch;
-    snapshot->detection.configVersion = version;
-    snapshot->detection.requiredFrames = m_pipeline->detectionConfig().accumulator.frames;
-    if (result && result->generation == epoch && result->configVersion == version &&
-        result->startFrequencyHz == frame->startFrequencyHz &&
-        result->binWidthHz == frame->binWidthHz && result->pointCount == frame->powerDb.size() &&
-        result->referenceLevelDbm == frame->referenceLevelDbm &&
-        result->resolutionBandwidthHz == frame->resolutionBandwidthHz && result->sourceName == frame->sourceName)
-        snapshot->detection = *result;
-    else snapshot->detection.diagnostics.message = "SCN waiting for a compatible detection result.";
-    snapshot->running = m_pipeline->active;
-    snapshot->droppedFrames = m_pipeline->queue.dropped();
-    emit snapshotReady(snapshot);
+    if (frame) {
+        auto snapshot = std::make_shared<algorithm::DisplaySnapshot>();
+        snapshot->frame = *frame; // At most one raw-frame copy per publication tick.
+        snapshot->detection.generation = epoch;
+        snapshot->detection.configVersion = version;
+        snapshot->detection.requiredFrames = m_pipeline->detectionConfig().accumulator.frames;
+        if (result && result->generation == epoch && result->configVersion == version &&
+            result->startFrequencyHz == frame->startFrequencyHz &&
+            result->binWidthHz == frame->binWidthHz && result->pointCount == frame->powerDb.size() &&
+            result->referenceLevelDbm == frame->referenceLevelDbm &&
+            result->resolutionBandwidthHz == frame->resolutionBandwidthHz && result->sourceName == frame->sourceName)
+            snapshot->detection = *result;
+        else snapshot->detection.diagnostics.message = "SCN waiting for a compatible detection result.";
+        snapshot->running = m_pipeline->active;
+        snapshot->droppedFrames = m_pipeline->queue.dropped();
+        emit snapshotReady(snapshot);
+    }
+    if (policySnapshot && policyRevision != m_publishedPolicyRevision) {
+        m_publishedPolicyRevision = policyRevision;
+        emit policySnapshotReady(policySnapshot);
+    }
+    if (!alarmChanges.empty()) emit alarmEventsReady(alarmChanges);
 }
 } // namespace scn::application
 

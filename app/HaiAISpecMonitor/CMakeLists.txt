@@ -75,6 +75,7 @@ if(WIN32)
                 $<IF:$<CONFIG:Debug>,--debug,--release>
                 --no-translations
                 --no-system-d3d-compiler
+                --no-quick-import
                 --compiler-runtime
                 --dir "$<TARGET_FILE_DIR:HaiAISpecMonitor>"
                 "$<TARGET_FILE:HaiAISpecMonitor>"

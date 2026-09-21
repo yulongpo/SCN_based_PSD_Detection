@@ -53,7 +53,18 @@ UI 提交速率不等于显卡实际呈现 FPS；Direct2D 呈现性能需在运�
 模型错误不停止原始频谱显示、不产生虚假检测，也不自动切换 ONNX/Python/CPU 检测器。
 终态诊断导出失败保留成功检测，另设 `exportFailed` / `diagnosticError`；DetectionLab 仍返回失败码，
 不把不完整的导出视为成功。文件循环只重置历史，不反复加载失败模型；显式重新开始/改配置可重试初始化。
-未实现分类、白名单或告警：信号类型“未分类”，告警“未接入”，置信度不驱动告警。
+算法层不实现分类、白名单或告警；应用层在检测结果之后独立执行白名单结果整理和告警规则。
+信号类型仍为“未分类”，告警等级由规则条件决定，不由置信度自动映射。白名单不抑制告警。
+
+## 应用层白名单与告警
+
+白名单和告警规则在应用层处理，频段统一按相交匹配，端点相接也命中：
+`signalEnd >= policyStart && signalStart <= policyEnd`。每条命中的白名单生成一条固定配置频段的
+业务结果，并移除本次命中的原始结果；多个原始结果命中同一白名单时合并为一条，多个白名单命中
+同一原始结果时分别生成结果。替换结果沿用信号电平最高的代表检测值，并保留全部原始 ID。
+ISA JSON 导入/导出和应用。配置保存到 `config/policy.json`，事件历史保存到
+`config/policy.sqlite`；历史页面支持查询、确认和 CSV/JSON 导出。规则状态按“业务来源 × 业务 ID ×
+规则”维护，活动事件取最高等级，暂停、故障和结果截断不会被误判为信号消失。
 
 ## 模型与依赖
 
@@ -78,7 +89,7 @@ CMake 仅启用 CXX。FindCUDAToolkit 可以查询 nvcc 版本，但不会用 nv
 
 ```powershell
 cmake --preset vs2026-qt611-debug
-cmake --build --preset vs2026-qt611-debug --target HaiAISpecMonitor DetectionLab scn_tests scn_session_tests
+cmake --build --preset vs2026-qt611-debug --target HaiAISpecMonitor DetectionLab scn_tests scn_session_tests scn_policy_tests scn_policy_storage_tests
 ctest --preset vs2026-qt611-debug
 git diff --check
 

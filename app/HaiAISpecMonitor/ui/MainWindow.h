@@ -2,6 +2,7 @@
 
 #include "PlaybackPage.h"
 #include "SettingsPage.h"
+#include "FrequencyNavigatorWidget.h"
 #include "SpectrumWidget.h"
 #include "StatusBarWidget.h"
 #include "WaterfallWidget.h"
@@ -10,9 +11,12 @@
 
 #include "../../../application/MonitoringSession.h"
 #include "../../../application/PresentationModel.h"
+#include "../../../application/policy/PolicyTypes.h"
 
 #include <QMainWindow>
+#include <QByteArray>
 #include <QPoint>
+#include <QRect>
 #include <QElapsedTimer>
 
 #include <optional>
@@ -22,6 +26,7 @@ class QCheckBox;
 class QCloseEvent;
 class QComboBox;
 class QDoubleSpinBox;
+class QEvent;
 class QFrame;
 class QLabel;
 class QLineEdit;
@@ -35,6 +40,8 @@ class QTimer;
 
 namespace scn::app
 {
+
+namespace policy = scn::application::policy;
 
 class MainWindow final : public QMainWindow
 {
@@ -62,12 +69,20 @@ private slots:
     void onError(const QString& message);
     void onReplayRequested(const QString& path);
     void updateRuntimeStatus();
+    void applyPolicyConfiguration();
+    void onPolicySnapshot(const scn::application::policy::PolicySnapshotPtr& snapshot);
+    void onAlarmEvents(const std::vector<scn::application::policy::AlarmEventChange>& changes);
+    void onPolicyStatus(const QString& message);
+    void showAlarmHistory();
 
 protected:
     void closeEvent(QCloseEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void mouseMoveEvent(QMouseEvent* event) override;
     void mouseReleaseEvent(QMouseEvent* event) override;
+    bool eventFilter(QObject* watched, QEvent* event) override;
+    bool nativeEvent(const QByteArray& eventType, void* message,
+                     qintptr* result) override;
 
 private:
     void buildUi();
@@ -79,6 +94,7 @@ private:
     void applyTheme();
     void updateSourceControls();
     void updateDisplayDomain();
+    void syncFrequencyNavigator();
     void updateButtonState(const QString& state);
     void updateMonitorMetrics(const algorithm::DisplaySnapshot& snapshot);
     void applyFileMetadata(const QString& path);
@@ -90,11 +106,18 @@ private:
     void clearMonitoringDisplay(bool discardCurrentGeneration = true);
     void updateDetectionStatus(const algorithm::DisplaySnapshot* snapshot);
     void updateSignalTable(const algorithm::DisplaySnapshot& snapshot);
+    const policy::SignalAnnotation* annotationFor(policy::PolicySignalSource source,
+                                                  std::int64_t signalId) const;
     QString formatDetectionTime(std::int64_t timestampNs, bool fileSource) const;
-    QString signalDetails(const algorithm::DetectedSignal& signal, bool fileSource) const;
+    QString signalDetails(const policy::PolicySignal& signal, bool fileSource) const;
     source::SourceConfig currentConfig() const;
     bool validateConfiguration(const source::SourceConfig& config, QString& error) const;
     QString formatFrequency(double hz, int decimals = 3) const;
+    Qt::Edges resizeEdgesAt(const QPoint& globalPosition) const;
+    void updateResizeCursor(const QPoint& globalPosition);
+    void restoreResizeCursor();
+    void applyManualResize(const QPoint& globalPosition);
+    void finishManualResize();
 
     application::MonitoringSession& m_session;
     application::PresentationModel& m_presentationModel;
@@ -112,7 +135,11 @@ private:
     QWidget* m_monitorPage = nullptr;
 
     QComboBox* m_sourceCombo = nullptr;
-    QStackedWidget* m_sourceFields = nullptr;
+    QWidget* m_centerGroup = nullptr;
+    QWidget* m_bandwidthGroup = nullptr;
+    QWidget* m_fileSourceGroup = nullptr;
+    QWidget* m_resolutionBandwidthGroup = nullptr;
+    QWidget* m_rbwShapeGroup = nullptr;
     QLineEdit* m_filePath = nullptr;
     QPushButton* m_browseButton = nullptr;
     QDoubleSpinBox* m_centerFrequency = nullptr;
@@ -134,11 +161,11 @@ private:
     QLabel* m_criticalAlertLabel = nullptr;
     QLabel* m_generalAlarmLabel = nullptr;
     QLabel* m_signalTotalLabel = nullptr;
-    QLabel* m_rbwShapeLabel = nullptr;
     StatusBarWidget* m_statusStrip = nullptr;
     QSplitter* m_plotSplitter = nullptr;
     SpectrumWidget* m_spectrum = nullptr;
     WaterfallWidget* m_waterfall = nullptr;
+    FrequencyNavigatorWidget* m_frequencyNavigator = nullptr;
     QTableWidget* m_signalTable = nullptr;
     PlaybackPage* m_playbackPage = nullptr;
     SettingsPage* m_settingsPage = nullptr;
@@ -147,6 +174,9 @@ private:
     algorithm::DisplaySnapshotPtr m_pendingSnapshot;
     algorithm::DisplaySnapshotPtr m_displaySnapshot;
     std::optional<algorithm::DetectionConfig> m_appliedDetectionConfig;
+    policy::PolicySnapshotPtr m_policySnapshot;
+    policy::PolicySnapshotPtr m_pendingPolicySnapshot;
+    std::uint64_t m_policyEventRevision = 0;
     using DetectionKey = std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
                                     algorithm::DetectionStage>;
     std::optional<DetectionKey> m_lastDetectionKey;
@@ -160,11 +190,16 @@ private:
 
     bool m_monitoring = false;
     bool m_dragging = false;
+    bool m_manualResizing = false;
+    bool m_resizeCursorOverridden = false;
     bool m_updatingFrequency = false;
     bool m_fileFrequencyMetadataLocked = false;
     bool m_fileRbwMetadataLocked = false;
     bool m_fileReferenceMetadataLocked = false;
     QPoint m_dragOffset;
+    QPoint m_resizePressPosition;
+    QRect m_resizeGeometry;
+    Qt::Edges m_resizeEdges;
 };
 
 } // namespace scn::app

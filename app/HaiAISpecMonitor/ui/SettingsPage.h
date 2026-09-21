@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../algorithm/DetectionConfig.h"
+#include "../../../application/policy/PolicyTypes.h"
 
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -16,6 +17,8 @@ class QSpinBox;
 namespace scn::app
 {
 
+namespace policy = scn::application::policy;
+
 /**
  * @brief 原 ISA 系统设置页面的 Qt6 兼容实现。
  *
@@ -28,18 +31,29 @@ class SettingsPage final : public QWidget
 
 public:
     explicit SettingsPage(QWidget* parent = nullptr);
+    int displayRefreshRateHz() const;
     algorithm::DetectionConfig detectionConfig() const;
     void acceptDetectionConfig(const algorithm::DetectionConfig& config);
     void setDetectionFeedback(const QString& message);
+    policy::PolicyConfig policyConfig(QString* error = nullptr) const;
+    bool acceptPolicyConfig(const policy::PolicyConfig& config, QString* error = nullptr);
 
 signals:
     void logMessage(const QString& message);
+    void displayRefreshRateChanged(int rateHz);
     void detectionApplyRequested();
+    void policyApplyRequested();
+    void alarmHistoryRequested();
 
 private slots:
     void selectPage(int index);
     void addRule();
     void removeRule();
+    void addWhitelist();
+    void removeWhitelist();
+    void applyPolicy();
+    void importPolicy();
+    void exportPolicy();
     void applyStorage();
     void clearLog();
     void exportLog();
@@ -49,6 +63,8 @@ private:
     QWidget* buildDisplayPage();
     QWidget* buildStoragePage();
     QWidget* buildRulePage();
+    QWidget* buildWhitelistPage();
+    QWidget* buildHistoryPage();
     QWidget* buildPushPage();
     QWidget* buildLogPage();
     QWidget* buildHelpPage();
@@ -57,11 +73,16 @@ private:
     void setDetectionConfig(const algorithm::DetectionConfig& config);
     void saveDetectionConfig(const algorithm::DetectionConfig& config) const;
     void appendLog(const QString& message);
+    void loadPolicyConfig();
+    void populatePolicyTables(const policy::PolicyConfig& config);
+    bool savePolicyConfig(const policy::PolicyConfig& config, QString* error = nullptr);
 
     QStackedWidget* m_stack = nullptr;
     QPlainTextEdit* m_logEdit = nullptr;
+    QSpinBox* m_displayRate = nullptr;
     QLineEdit* m_storagePath = nullptr;
     QTableWidget* m_ruleTable = nullptr;
+    QTableWidget* m_whitelistTable = nullptr;
     QCheckBox* m_detectionEnabled = nullptr;
     QLineEdit* m_modelPath = nullptr;
     QSpinBox* m_gpuIndex = nullptr;

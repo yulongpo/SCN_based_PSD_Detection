@@ -1,4 +1,5 @@
 #include "MainWindow.h"
+#include "FrequencySpinBox.h"
 #include "../../../source/FileSource/FileSource.h"
 
 #include <QAbstractButton>
@@ -8,7 +9,10 @@
 #include <QCloseEvent>
 #include <QComboBox>
 #include <QColor>
+#include <QCursor>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -21,6 +25,10 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStatusBar>
@@ -33,101 +41,23 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QValidator>
+#include <QWindow>
 
 #include <algorithm>
 #include <cmath>
+
+#ifdef Q_OS_WIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 namespace scn::app
 {
 
 namespace
 {
-class FrequencySpinBox final : public QDoubleSpinBox
-{
-public:
-    explicit FrequencySpinBox(QWidget* parent)
-        : QDoubleSpinBox(parent)
-    {
-        setSuffix(QString());
-    }
-
-protected:
-    static bool parseFrequencyText(const QString& text, double& result)
-    {
-        QString value = text.simplified();
-        value.remove(QLatin1Char(' '));
-        if (value.isEmpty()) return false;
-
-        QString lower = value.toLower();
-        double multiplier = 1.0;
-        const auto stripSuffix = [&lower, &value](const QString& suffix) {
-            lower.chop(suffix.size());
-            value.chop(suffix.size());
-        };
-
-        // ISA-style input accepts both full units and their one-letter
-        // abbreviations.  Matching is deliberately case-insensitive.
-        if (lower.endsWith(QStringLiteral("ghz"))) {
-            stripSuffix(QStringLiteral("ghz"));
-            multiplier = 1e9;
-        } else if (lower.endsWith(QStringLiteral("mhz"))) {
-            stripSuffix(QStringLiteral("mhz"));
-            multiplier = 1e6;
-        } else if (lower.endsWith(QStringLiteral("khz"))) {
-            stripSuffix(QStringLiteral("khz"));
-            multiplier = 1e3;
-        } else if (lower.endsWith(QStringLiteral("hz"))) {
-            stripSuffix(QStringLiteral("hz"));
-        } else if (lower.endsWith(QLatin1Char('g'))) {
-            stripSuffix(QStringLiteral("g"));
-            multiplier = 1e9;
-        } else if (lower.endsWith(QLatin1Char('m'))) {
-            stripSuffix(QStringLiteral("m"));
-            multiplier = 1e6;
-        } else if (lower.endsWith(QLatin1Char('k'))) {
-            stripSuffix(QStringLiteral("k"));
-            multiplier = 1e3;
-        } else if (lower.endsWith(QLatin1Char('h'))) {
-            stripSuffix(QStringLiteral("h"));
-        }
-
-        bool ok = false;
-        const double numeric = value.toDouble(&ok);
-        if (!ok || !std::isfinite(numeric)) return false;
-        result = numeric * multiplier;
-        return std::isfinite(result);
-    }
-
-    QString textFromValue(double value) const override
-    {
-        const double absHz = std::abs(value);
-        if (absHz >= 1e9)
-            return QStringLiteral("%1 GHz").arg(value / 1e9, 0, 'f', 9);
-        if (absHz >= 1e6)
-            return QStringLiteral("%1 MHz").arg(value / 1e6, 0, 'f', 6);
-        if (absHz >= 1e3)
-            return QStringLiteral("%1 kHz").arg(value / 1e3, 0, 'f', 3);
-        return QStringLiteral("%1 Hz").arg(value, 0, 'f', 0);
-    }
-
-    double valueFromText(const QString& text) const override
-    {
-        double result = 0.0;
-        return parseFrequencyText(text, result) ? result : QDoubleSpinBox::value();
-    }
-
-    QValidator::State validate(QString& input, int& position) const override
-    {
-        Q_UNUSED(position)
-        if (input.trimmed().isEmpty()) return QValidator::Intermediate;
-
-        double result = 0.0;
-        if (!parseFrequencyText(input, result)) return QValidator::Invalid;
-        return result >= minimum() && result <= maximum()
-            ? QValidator::Acceptable : QValidator::Invalid;
-    }
-};
-
 QPushButton* headerButton(const QString& text, QWidget* parent)
 {
     auto* button = new QPushButton(text, parent);
@@ -236,6 +166,13 @@ MainWindow::MainWindow(application::MonitoringSession& session,
     applyTheme();
     buildUi();
     buildMenus();
+    qApp->installEventFilter(this);
+    // The frameless window is covered by child widgets.  Enable hover events
+    // on the existing widget tree so the global edge hit test can update the
+    // resize cursor even when the pointer is over a chart or control.
+    for (QWidget* child : findChildren<QWidget*>()) {
+        child->setMouseTracking(true);
+    }
 
     connect(&m_session, &application::MonitoringSession::snapshotReady,
             &m_presentationModel, &application::PresentationModel::acceptSnapshot);
@@ -271,11 +208,34 @@ MainWindow::MainWindow(application::MonitoringSession& session,
             this, [this](const QString& message) {
                 statusBar()->showMessage(message, 4000);
             });
+    connect(m_settingsPage, &SettingsPage::displayRefreshRateChanged,
+            this, [this](int rateHz) {
+                const int safeRateHz = std::clamp(rateHz, 1, 120);
+                if (m_displayTimer) m_displayTimer->setInterval(1000 / safeRateHz);
+                m_session.setPublicationRateHz(safeRateHz);
+            });
     connect(m_settingsPage, &SettingsPage::detectionApplyRequested,
             this, [this] { (void)applyDetectionConfiguration(); });
+    connect(m_settingsPage, &SettingsPage::policyApplyRequested,
+            this, &MainWindow::applyPolicyConfiguration);
+    connect(m_settingsPage, &SettingsPage::alarmHistoryRequested,
+            this, &MainWindow::showAlarmHistory);
+    connect(&m_session, &application::MonitoringSession::policySnapshotReady,
+            this, &MainWindow::onPolicySnapshot);
+    connect(&m_session, &application::MonitoringSession::alarmEventsReady,
+            this, &MainWindow::onAlarmEvents);
+    connect(&m_session, &application::MonitoringSession::policyStatusChanged,
+            this, &MainWindow::onPolicyStatus);
     // ISA 中频谱图是频率视图的交互主控，瀑布图跟随同一范围和选中频点重算。
     connect(m_spectrum, &SpectrumWidget::viewRangeChanged,
-            m_waterfall, &WaterfallWidget::setFrequencyView);
+            this, [this](double startHz, double endHz) {
+                m_waterfall->setFrequencyView(startHz, endHz);
+                m_frequencyNavigator->setViewRange(startHz, endHz);
+            });
+    connect(m_frequencyNavigator, &FrequencyNavigatorWidget::viewRangeRequested,
+            this, [this](double startHz, double endHz) {
+                m_spectrum->setFrequencyView(startHz, endHz);
+            });
     connect(m_spectrum, &SpectrumWidget::frequencySelected,
             m_waterfall, &WaterfallWidget::setSelectedFrequency);
 
@@ -285,14 +245,17 @@ MainWindow::MainWindow(application::MonitoringSession& session,
     m_statusTimer->start();
 
     m_displayTimer = new QTimer(this);
-    m_displayTimer->setInterval(33);
+    const int displayRateHz = std::clamp(m_settingsPage->displayRefreshRateHz(), 1, 120);
+    m_displayTimer->setInterval(1000 / displayRateHz);
     connect(m_displayTimer, &QTimer::timeout, this, &MainWindow::refreshDisplay);
     m_displayTimer->start();
+    m_session.setPublicationRateHz(displayRateHz);
 
     loadUiState();
     updateSourceControls();
     updateDisplayDomain();
     (void)applyDetectionConfiguration();
+    applyPolicyConfiguration();
     applyConfiguration();
     updateRuntimeStatus();
 }
@@ -382,17 +345,21 @@ void MainWindow::buildTitleBar()
     m_titleBar = new QFrame(this);
     m_titleBar->setObjectName(QStringLiteral("titleBar"));
     m_titleBar->setFixedHeight(50);
+    m_titleBar->setMouseTracking(true);
+    m_titleBar->installEventFilter(this);
     auto* layout = new QHBoxLayout(m_titleBar);
     layout->setContentsMargins(12, 0, 0, 0);
     layout->setSpacing(0);
 
     auto* logo = new QLabel(m_titleBar);
+    logo->setAttribute(Qt::WA_TransparentForMouseEvents);
     logo->setFixedSize(30, 30);
     logo->setPixmap(QPixmap(QStringLiteral(":/title/title_log.png"))
         .scaled(30, 30, Qt::KeepAspectRatio, Qt::SmoothTransformation));
     layout->addWidget(logo);
     layout->addSpacing(6);
     auto* title = label(QStringLiteral("智能频谱监测仪"), m_titleBar, QStringLiteral("appTitle"));
+    title->setAttribute(Qt::WA_TransparentForMouseEvents);
     layout->addWidget(title);
     layout->addSpacing(20);
 
@@ -452,19 +419,23 @@ void MainWindow::buildMonitorPage()
     plotPanel->setObjectName(QStringLiteral("displayPanel"));
     auto* plotLayout = new QVBoxLayout(plotPanel);
     plotLayout->setContentsMargins(1, 1, 1, 1);
-    plotLayout->setSpacing(2);
+    plotLayout->setSpacing(0);
     m_plotSplitter = new QSplitter(Qt::Vertical, plotPanel);
     auto* splitter = m_plotSplitter;
+    m_frequencyNavigator = new FrequencyNavigatorWidget(plotPanel);
     m_waterfall = new WaterfallWidget(splitter);
     m_spectrum = new SpectrumWidget(splitter);
     m_waterfall->setMinimumHeight(135);
     m_spectrum->setMinimumHeight(280);
     splitter->addWidget(m_waterfall);
     splitter->addWidget(m_spectrum);
+    plotLayout->addWidget(m_frequencyNavigator, 0);
+    plotLayout->addWidget(splitter, 1);
+    splitter->setCollapsible(0, false);
+    splitter->setCollapsible(1, false);
     splitter->setStretchFactor(0, 2);
     splitter->setStretchFactor(1, 5);
-    splitter->setSizes({190, 500});
-    plotLayout->addWidget(splitter);
+    splitter->setSizes({250, 500});
     root->addWidget(plotPanel, 1);
 
     buildSignalTable(m_monitorPage);
@@ -496,83 +467,83 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_sourceCombo->setMinimumWidth(96);
     configGrid->addWidget(m_sourceCombo, 0, 1);
 
-    m_sourceFields = new QStackedWidget(left);
-    m_sourceFields->setMinimumWidth(420);
-    m_sourceFields->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    const auto parameterGroup = [left](const QString& title, QWidget* field) {
+        auto* group = new QWidget(left);
+        auto* groupLayout = new QHBoxLayout(group);
+        groupLayout->setContentsMargins(0, 0, 0, 0);
+        groupLayout->setSpacing(8);
+        auto* titleLabel = label(title, group, QStringLiteral("controlLabel"));
+        titleLabel->setMinimumWidth(52);
+        groupLayout->addWidget(titleLabel);
+        groupLayout->addWidget(field, 1);
+        return group;
+    };
 
-    auto* hardwarePage = new QWidget(m_sourceFields);
-    auto* hardwareLayout = new QHBoxLayout(hardwarePage);
-    hardwareLayout->setContentsMargins(0, 0, 0, 0);
-    hardwareLayout->setSpacing(8);
-    auto* centerLabel = label(QStringLiteral("中心频率"), hardwarePage, QStringLiteral("controlLabel"));
-    centerLabel->setMinimumWidth(64);
-    hardwareLayout->addWidget(centerLabel);
-    m_centerFrequency = new FrequencySpinBox(hardwarePage);
+    m_centerFrequency = new FrequencySpinBox(left);
     m_centerFrequency->setRange(0.0, 6.4e9);
     m_centerFrequency->setDecimals(6);
     m_centerFrequency->setValue(2.4e9);
     m_centerFrequency->setMinimumWidth(150);
-    hardwareLayout->addWidget(m_centerFrequency, 1);
-    auto* bandwidthLabel = label(QStringLiteral("扫宽"), hardwarePage, QStringLiteral("controlLabel"));
-    bandwidthLabel->setMinimumWidth(36);
-    hardwareLayout->addWidget(bandwidthLabel);
-    m_bandwidth = new FrequencySpinBox(hardwarePage);
+    m_centerGroup = parameterGroup(QStringLiteral("中心频率"), m_centerFrequency);
+    configGrid->addWidget(m_centerGroup, 0, 2, 1, 2);
+
+    m_bandwidth = new FrequencySpinBox(left);
     m_bandwidth->setRange(20.0, 6.4e9);
     m_bandwidth->setDecimals(6);
     m_bandwidth->setValue(100.0e6);
     m_bandwidth->setMinimumWidth(150);
-    hardwareLayout->addWidget(m_bandwidth, 1);
-    hardwareLayout->addStretch(1);
-    m_sourceFields->addWidget(hardwarePage);
+    m_bandwidthGroup = parameterGroup(QStringLiteral("扫宽"), m_bandwidth);
+    configGrid->addWidget(m_bandwidthGroup, 0, 4, 1, 2);
 
-    auto* filePage = new QWidget(m_sourceFields);
-    auto* fileLayout = new QHBoxLayout(filePage);
+    auto* fileGroup = new QWidget(left);
+    auto* fileLayout = new QHBoxLayout(fileGroup);
     fileLayout->setContentsMargins(0, 0, 0, 0);
     fileLayout->setSpacing(8);
-    auto* fileLabel = label(QStringLiteral("文件路径"), filePage, QStringLiteral("controlLabel"));
+    auto* fileLabel = label(QStringLiteral("文件路径"), fileGroup, QStringLiteral("controlLabel"));
     fileLabel->setMinimumWidth(52);
     fileLayout->addWidget(fileLabel);
-    m_filePath = new QLineEdit(filePage);
+    m_filePath = new QLineEdit(fileGroup);
     m_filePath->setPlaceholderText(QStringLiteral("请选择回放文件..."));
     m_filePath->setMinimumWidth(300);
     m_filePath->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     fileLayout->addWidget(m_filePath, 1);
-    m_browseButton = new QPushButton(filePage);
+    m_browseButton = new QPushButton(fileGroup);
     m_browseButton->setIcon(QIcon(QStringLiteral(":/button/folder.png")));
     m_browseButton->setIconSize(QSize(16, 16));
     m_browseButton->setObjectName(QStringLiteral("pageToolButton"));
     m_browseButton->setToolTip(QStringLiteral("选择频谱文件"));
     m_browseButton->setFixedSize(34, 30);
     fileLayout->addWidget(m_browseButton);
-    m_sourceFields->addWidget(filePage);
-    configGrid->addWidget(m_sourceFields, 0, 2, 1, 5);
+    m_fileSourceGroup = fileGroup;
+    configGrid->addWidget(m_fileSourceGroup, 0, 2, 1, 6);
+    m_fileSourceGroup->setVisible(false);
 
-    configGrid->addWidget(label(QStringLiteral("带宽分辨率"), left, QStringLiteral("controlLabel")), 0, 7);
     m_resolutionBandwidth = new FrequencySpinBox(left);
     m_resolutionBandwidth->setRange(0.602006912, 10.1e6);
     m_resolutionBandwidth->setDecimals(6);
     m_resolutionBandwidth->setValue(50.0e3);
     m_resolutionBandwidth->setMinimumWidth(130);
-    configGrid->addWidget(m_resolutionBandwidth, 0, 8);
+    m_resolutionBandwidthGroup = parameterGroup(QStringLiteral("带宽分辨率"), m_resolutionBandwidth);
+    configGrid->addWidget(m_resolutionBandwidthGroup, 0, 6, 1, 2);
 
     // ISA keeps start/stop frequency visible in both live and file modes.
     // These controls use Hz internally and accept an explicit unit suffix.
-    configGrid->addWidget(label(QStringLiteral("起始频率"), left, QStringLiteral("controlLabel")), 1, 0);
     m_startFrequency = new FrequencySpinBox(left);
     m_startFrequency->setRange(0.0, 6.4e9);
     m_startFrequency->setDecimals(6);
     m_startFrequency->setValue(2.35e9);
     m_startFrequency->setMinimumWidth(150);
-    configGrid->addWidget(m_startFrequency, 1, 1);
-    configGrid->addWidget(label(QStringLiteral("终止频率"), left, QStringLiteral("controlLabel")), 1, 2);
+    auto* startGroup = parameterGroup(QStringLiteral("起始频率"), m_startFrequency);
+    configGrid->addWidget(startGroup, 1, 0, 1, 2);
+
     m_endFrequency = new FrequencySpinBox(left);
     m_endFrequency->setRange(0.0, 6.4e9);
     m_endFrequency->setDecimals(6);
     m_endFrequency->setValue(2.45e9);
     m_endFrequency->setMinimumWidth(150);
-    configGrid->addWidget(m_endFrequency, 1, 3);
+    auto* endGroup = parameterGroup(QStringLiteral("终止频率"), m_endFrequency);
+    configGrid->addWidget(endGroup, 1, 2, 1, 2);
 
-    configGrid->addWidget(label(QStringLiteral("参考电平"), left, QStringLiteral("controlLabel")), 1, 4);
     m_referenceLevel = new QDoubleSpinBox(left);
     m_referenceLevel->setRange(-1000.0, 1000.0);
     m_referenceLevel->setDecimals(1);
@@ -580,10 +551,10 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_referenceLevel->setSuffix(QStringLiteral(" dBm"));
     m_referenceLevel->setMinimumWidth(120);
     m_referenceLevel->setToolTip(QStringLiteral(
-        "用于自动增益/衰减控制；频谱图和瀑布图显示范围为参考电平以下100 dB"));
-    configGrid->addWidget(m_referenceLevel, 1, 5);
-    m_rbwShapeLabel = label(QStringLiteral("RBW窗口"), left, QStringLiteral("controlLabel"));
-    configGrid->addWidget(m_rbwShapeLabel, 1, 6);
+        "用于自动增益/衰减控制；频谱图和瀑布图显示范围为参考电平以下80 dB"));
+    auto* referenceGroup = parameterGroup(QStringLiteral("参考电平"), m_referenceLevel);
+    configGrid->addWidget(referenceGroup, 1, 4, 1, 2);
+
     m_rbwShape = new QComboBox(left);
     m_rbwShape->addItem(QStringLiteral("Nuttall"), static_cast<int>(source::RbwShape::Nuttall));
     m_rbwShape->addItem(QStringLiteral("Flattop"), static_cast<int>(source::RbwShape::Flattop));
@@ -591,11 +562,12 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_rbwShape->setToolTip(QStringLiteral(
         "BB60C RBW窗口：Nuttall速度优先，Flattop幅度精度优先，CISPR为6 dB截止"));
     m_rbwShape->setMinimumWidth(130);
-    configGrid->addWidget(m_rbwShape, 1, 7);
+    m_rbwShapeGroup = parameterGroup(QStringLiteral("RBW窗口"), m_rbwShape);
+    configGrid->addWidget(m_rbwShapeGroup, 1, 6, 1, 2);
     configGrid->setColumnStretch(1, 1);
     configGrid->setColumnStretch(3, 1);
     configGrid->setColumnStretch(5, 1);
-    configGrid->setColumnStretch(8, 1);
+    configGrid->setColumnStretch(7, 1);
     layout->addWidget(left, 1);
 
     auto addDivider = [panel, layout]() {
@@ -650,16 +622,16 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     auto* metrics = new QHBoxLayout(metricsPanel);
     metrics->setContentsMargins(0, 0, 0, 0);
     metrics->setSpacing(8);
-    auto* critical = metricCard(QStringLiteral(":/collect/critical_alert.png"), QStringLiteral("严重警告\n未接入"),
+    auto* critical = metricCard(QStringLiteral(":/collect/critical_alert.png"), QStringLiteral("严重警告"),
                                 QStringLiteral("#E63E3E"), m_criticalAlertLabel, metricsPanel);
-    auto* general = metricCard(QStringLiteral(":/collect/general_alarm.png"), QStringLiteral("一般警告\n未接入"),
+    auto* general = metricCard(QStringLiteral(":/collect/general_alarm.png"), QStringLiteral("一般警告"),
                                QStringLiteral("#FFBA00"), m_generalAlarmLabel, metricsPanel);
     auto* total = metricCard(QStringLiteral(":/collect/signal_total.png"), QStringLiteral("信号总数"),
                              QStringLiteral("#0A8CFE"), m_signalTotalLabel, metricsPanel);
-    m_criticalAlertLabel->setText(QStringLiteral("—"));
-    m_generalAlarmLabel->setText(QStringLiteral("—"));
-    critical->setToolTip(QStringLiteral("告警规则未接入；SCN 置信度不代表告警等级。"));
-    general->setToolTip(critical->toolTip());
+    m_criticalAlertLabel->setText(QStringLiteral("0"));
+    m_generalAlarmLabel->setText(QStringLiteral("0"));
+    critical->setToolTip(QStringLiteral("当前活动的严重告警事件数。告警等级由规则决定，不由 SCN 置信度自动映射。"));
+    general->setToolTip(QStringLiteral("当前活动的一般告警事件数。"));
     total->setToolTip(QStringLiteral("最新检测结果中的观测信号数。"));
     metrics->addWidget(critical, 1);
     metrics->addWidget(general, 1);
@@ -915,7 +887,6 @@ void MainWindow::applyFileMetadata(const QString& path)
 void MainWindow::sourceSelectionChanged(int)
 {
     const bool fileSource = m_sourceCombo->currentData().toInt() == static_cast<int>(algorithm::SourceKind::File);
-    if (m_sourceFields) m_sourceFields->setCurrentIndex(fileSource ? 1 : 0);
     if (fileSource) {
         const QString path = m_filePath->text().trimmed();
         if (!path.isEmpty() && QFileInfo::exists(path)) applyFileMetadata(path);
@@ -936,6 +907,9 @@ void MainWindow::updateSourceControls()
     const bool editable = !m_monitoring;
     m_centerFrequency->setEnabled(!fileSource && editable);
     m_bandwidth->setEnabled(!fileSource && editable);
+    if (m_centerGroup) m_centerGroup->setVisible(!fileSource);
+    if (m_bandwidthGroup) m_bandwidthGroup->setVisible(!fileSource);
+    if (m_fileSourceGroup) m_fileSourceGroup->setVisible(fileSource);
     m_filePath->setEnabled(fileSource && editable);
     m_browseButton->setEnabled(fileSource && editable);
     // FILE metadata are authoritative for the active file.  Keep the values
@@ -946,11 +920,14 @@ void MainWindow::updateSourceControls()
     m_resolutionBandwidth->setEnabled(editable && !fileSource);
     m_referenceLevel->setEnabled(editable && !fileSource);
     m_rbwShape->setEnabled(!fileSource && editable);
-    if (m_rbwShapeLabel) m_rbwShapeLabel->setVisible(!fileSource);
-    m_rbwShape->setVisible(!fileSource);
-    if (auto* grid = qobject_cast<QGridLayout*>(m_sourceFields
-                                                     ? m_sourceFields->parentWidget()->layout()
-                                                     : nullptr)) {
+    if (m_rbwShapeGroup) m_rbwShapeGroup->setVisible(!fileSource);
+    if (auto* grid = m_centerGroup
+                         ? qobject_cast<QGridLayout*>(m_centerGroup->parentWidget()->layout())
+                         : nullptr) {
+        if (m_resolutionBandwidthGroup) {
+            grid->addWidget(m_resolutionBandwidthGroup, fileSource ? 1 : 0, 6, 1, 2);
+            m_resolutionBandwidthGroup->setVisible(true);
+        }
         grid->invalidate();
         grid->activate();
     }
@@ -975,6 +952,26 @@ void MainWindow::updateDisplayDomain()
     }
     m_spectrum->setDisplayDomain(startHz, endHz, referenceLevelDbm);
     m_waterfall->setDisplayDomain(startHz, endHz, referenceLevelDbm);
+    syncFrequencyNavigator();
+}
+
+void MainWindow::syncFrequencyNavigator()
+{
+    if (!m_frequencyNavigator || !m_spectrum || !m_waterfall) return;
+    double startHz = m_startFrequency ? m_startFrequency->value() : 0.0;
+    double endHz = m_endFrequency ? m_endFrequency->value() : 0.0;
+    if (m_displaySnapshot && m_displaySnapshot->frame.isValid()) {
+        startHz = m_displaySnapshot->frame.startFrequencyHz;
+        endHz = m_displaySnapshot->frame.endFrequencyHz();
+    }
+    if (!(std::isfinite(startHz) && std::isfinite(endHz) && endHz > startHz)) return;
+    m_frequencyNavigator->setDomain(startHz, endHz);
+    if (m_spectrum->hasFrequencyView()) {
+        m_frequencyNavigator->setViewRange(m_spectrum->viewStartFrequency(),
+                                           m_spectrum->viewEndFrequency());
+    } else {
+        m_frequencyNavigator->setViewRange(startHz, endHz);
+    }
 }
 
 void MainWindow::loadUiState()
@@ -1055,9 +1052,10 @@ void MainWindow::loadUiState()
             settings.value(QStringLiteral("ui/plotSplitterState")).toByteArray());
     }
 
-    const int page = std::clamp(settings.value(QStringLiteral("ui/mainPage"), 0).toInt(),
-                                0, std::max(0, m_pages->count() - 1));
-    selectMainPage(page);
+    // Always start on the monitoring page.  The last top-level tab is a
+    // transient navigation choice and is intentionally not persisted.
+    settings.remove(QStringLiteral("ui/mainPage"));
+    selectMainPage(0);
 }
 
 void MainWindow::saveUiState() const
@@ -1065,7 +1063,8 @@ void MainWindow::saveUiState() const
     QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
     settings.setValue(QStringLiteral("ui/geometry"), saveGeometry());
     settings.setValue(QStringLiteral("ui/windowState"), saveState(1));
-    settings.setValue(QStringLiteral("ui/mainPage"), m_pages ? m_pages->currentIndex() : 0);
+    // Do not persist the last top-level tab; startup always opens monitoring.
+    settings.remove(QStringLiteral("ui/mainPage"));
     if (m_plotSplitter) {
         settings.setValue(QStringLiteral("ui/plotSplitterState"), m_plotSplitter->saveState());
     }
@@ -1175,8 +1174,8 @@ void MainWindow::clearDetectionDisplay()
 {
     m_lastDetectionKey.reset();
     m_signalTable->setRowCount(0);
-    m_criticalAlertLabel->setText(QStringLiteral("—"));
-    m_generalAlarmLabel->setText(QStringLiteral("—"));
+    m_criticalAlertLabel->setText(QStringLiteral("0"));
+    m_generalAlarmLabel->setText(QStringLiteral("0"));
     m_signalTotalLabel->setText(QStringLiteral("0"));
     if (m_displaySnapshot) {
         auto snapshot = std::make_shared<algorithm::DisplaySnapshot>(*m_displaySnapshot);
@@ -1197,15 +1196,19 @@ void MainWindow::clearMonitoringDisplay(bool discardCurrentGeneration)
     if (discardCurrentGeneration) m_minimumGeneration = m_latestGeneration + 1;
     m_pendingSnapshot.reset();
     m_displaySnapshot.reset();
+    m_policySnapshot.reset();
+    m_pendingPolicySnapshot.reset();
+    m_spectrum->setPolicySnapshot(nullptr);
     m_lastDetectionKey.reset();
     m_spectrum->clear();
     m_waterfall->clear();
+    syncFrequencyNavigator();
     m_displayRateTimer.invalidate();
     m_displayRateFrames = 0;
     m_displayRateHz = 0;
     m_signalTable->setRowCount(0);
-    m_criticalAlertLabel->setText(QStringLiteral("—"));
-    m_generalAlarmLabel->setText(QStringLiteral("—"));
+    m_criticalAlertLabel->setText(QStringLiteral("0"));
+    m_generalAlarmLabel->setText(QStringLiteral("0"));
     m_signalTotalLabel->setText(QStringLiteral("0"));
     m_frameLabel->setText(QStringLiteral("帧号：-"));
     updateDetectionStatus(nullptr);
@@ -1303,56 +1306,88 @@ void MainWindow::onSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
 void MainWindow::refreshDisplay()
 {
     const auto snapshot = m_pendingSnapshot;
-    if (!snapshot) return;
-    m_pendingSnapshot.reset();
+    if (!snapshot && !m_pendingPolicySnapshot) return;
 
-    if (m_displaySnapshot &&
-        m_displaySnapshot->detection.generation != snapshot->detection.generation) {
-        clearMonitoringDisplay(false);
+    if (snapshot) {
+        m_pendingSnapshot.reset();
+        if (m_displaySnapshot &&
+            m_displaySnapshot->detection.generation != snapshot->detection.generation) {
+            clearMonitoringDisplay(false);
+        }
+        if (!m_displaySnapshot) m_timeOriginNs = snapshot->frame.timestampNs;
+        const bool newRawFrame = !m_displaySnapshot ||
+            m_displaySnapshot->frame.sequence != snapshot->frame.sequence;
+        if (newRawFrame) {
+            if (!m_displayRateTimer.isValid()) m_displayRateTimer.start();
+            ++m_displayRateFrames;
+        }
+        m_displaySnapshot = snapshot;
+        const double endFrequencyHz = snapshot->frame.startFrequencyHz +
+            snapshot->frame.binWidthHz * static_cast<double>(snapshot->frame.powerDb.size());
+        m_spectrum->setSnapshot(snapshot);
+        m_waterfall->setSnapshot(snapshot);
+        syncFrequencyNavigator();
+        m_frameLabel->setText(QStringLiteral("帧号：%1").arg(snapshot->frame.sequence));
+        const bool fileSource = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt()) ==
+            algorithm::SourceKind::File;
+        if (fileSource) {
+            m_statusStrip->setMenuInfo((snapshot->frame.startFrequencyHz + endFrequencyHz) / 2.0,
+                                       endFrequencyHz - snapshot->frame.startFrequencyHz,
+                                       m_resolutionBandwidth->value());
+        } else {
+            m_statusStrip->setMenuInfoVisible(false);
+        }
+        updateDetectionStatus(snapshot.get());
     }
-    if (!m_displaySnapshot) m_timeOriginNs = snapshot->frame.timestampNs;
-    const bool newRawFrame = !m_displaySnapshot ||
-        m_displaySnapshot->frame.sequence != snapshot->frame.sequence;
-    if (newRawFrame) {
-        if (!m_displayRateTimer.isValid()) m_displayRateTimer.start();
-        ++m_displayRateFrames;
+
+    if (!m_displaySnapshot) return;
+    const auto& displaySnapshot = *m_displaySnapshot;
+    bool policyChanged = false;
+    if (m_pendingPolicySnapshot &&
+        m_pendingPolicySnapshot->generation == displaySnapshot.detection.generation &&
+        m_pendingPolicySnapshot->detectionConfigVersion == displaySnapshot.detection.configVersion &&
+        m_pendingPolicySnapshot->sequence <= displaySnapshot.frame.sequence) {
+        m_policySnapshot = std::move(m_pendingPolicySnapshot);
+        m_spectrum->setPolicySnapshot(m_policySnapshot);
+        policyChanged = true;
     }
-    m_displaySnapshot = snapshot;
-    const double endFrequencyHz = snapshot->frame.startFrequencyHz +
-        snapshot->frame.binWidthHz * static_cast<double>(snapshot->frame.powerDb.size());
-    m_spectrum->setSnapshot(snapshot);
-    m_waterfall->setSnapshot(snapshot);
-    m_frameLabel->setText(QStringLiteral("帧号：%1").arg(snapshot->frame.sequence));
+
+    const auto& snapshotRef = displaySnapshot;
     const bool fileSource = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt()) ==
         algorithm::SourceKind::File;
-    if (fileSource) {
-        m_statusStrip->setMenuInfo((snapshot->frame.startFrequencyHz + endFrequencyHz) / 2.0,
-                                   endFrequencyHz - snapshot->frame.startFrequencyHz,
-                                   m_resolutionBandwidth->value());
-    } else {
-        m_statusStrip->setMenuInfoVisible(false);
-    }
-    updateDetectionStatus(snapshot.get());
-    const auto& data = snapshot->detection;
-    const DetectionKey key{data.generation, data.configVersion, data.sequence, data.stage};
-    if (!m_lastDetectionKey || *m_lastDetectionKey != key) {
-        m_lastDetectionKey = key;
-        updateMonitorMetrics(*snapshot);
-        updateSignalTable(*snapshot);
-        if (fileSource) {
-            m_playbackPage->rememberFile(m_filePath->text(), m_sourceCombo->currentText(),
-                snapshot->frame.startFrequencyHz, endFrequencyHz, m_resolutionBandwidth->value(),
-                hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0, 0);
+    if (snapshot) {
+        const auto& current = *snapshot;
+        const auto& data = current.detection;
+        const DetectionKey key{data.generation, data.configVersion, data.sequence, data.stage};
+        if (!m_lastDetectionKey || *m_lastDetectionKey != key) {
+            m_lastDetectionKey = key;
+            updateMonitorMetrics(current);
+            updateSignalTable(current);
+            if (fileSource) {
+                const double endFrequencyHz = current.frame.startFrequencyHz +
+                    current.frame.binWidthHz * static_cast<double>(current.frame.powerDb.size());
+                m_playbackPage->rememberFile(m_filePath->text(), m_sourceCombo->currentText(),
+                    current.frame.startFrequencyHz, endFrequencyHz, m_resolutionBandwidth->value(),
+                    hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0, 0);
+            }
         }
+    }
+    if (policyChanged) {
+        updateMonitorMetrics(snapshotRef);
+        updateSignalTable(snapshotRef);
     }
 }
 
 void MainWindow::updateMonitorMetrics(const algorithm::DisplaySnapshot& snapshot)
 {
-    m_criticalAlertLabel->setText(QStringLiteral("—"));
-    m_generalAlarmLabel->setText(QStringLiteral("—"));
-    const auto count = hasDetectionObservations(snapshot.detection)
-        ? snapshot.detection.detections.size() : 0;
+    const bool policyUsable = m_policySnapshot &&
+        m_policySnapshot->generation == snapshot.detection.generation &&
+        m_policySnapshot->detectionConfigVersion == snapshot.detection.configVersion &&
+        m_policySnapshot->sequence <= snapshot.frame.sequence;
+    if (!policyUsable) return;
+    m_criticalAlertLabel->setText(QString::number(static_cast<qulonglong>(m_policySnapshot->activeCriticalCount)));
+    m_generalAlarmLabel->setText(QString::number(static_cast<qulonglong>(m_policySnapshot->activeGeneralCount)));
+    const auto count = m_policySnapshot->businessSignals.size();
     m_signalTotalLabel->setText(QString::number(static_cast<qulonglong>(count)));
 }
 
@@ -1443,16 +1478,19 @@ QString MainWindow::formatDetectionTime(std::int64_t timestampNs, bool fileSourc
         .arg(seconds, 0, 'f', 3);
 }
 
-QString MainWindow::signalDetails(const algorithm::DetectedSignal& signal, bool fileSource) const
+QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bool fileSource) const
 {
+    const auto& signal = businessSignal.measurement;
     QString branch;
     switch (signal.branch) {
     case algorithm::SpectrumBranch::Average: branch = QStringLiteral("平均谱（Average）"); break;
     case algorithm::SpectrumBranch::Maximum: branch = QStringLiteral("最大谱（Maximum）"); break;
     case algorithm::SpectrumBranch::Both: branch = QStringLiteral("双分支融合（Both）"); break;
     }
-    const QStringList details{
-        QStringLiteral("信号 ID：%1").arg(signal.id),
+    QStringList details{
+        QStringLiteral("信号 ID：%1").arg(QString::fromStdString(businessSignal.displayId)),
+        QStringLiteral("结果来源：%1").arg(businessSignal.source == policy::PolicySignalSource::Whitelist
+            ? QStringLiteral("白名单替换") : QStringLiteral("SCN 原始检测")),
         QStringLiteral("起始频率：%1 Hz").arg(signal.startFrequencyHz, 0, 'f', 3),
         QStringLiteral("终止频率：%1 Hz").arg(signal.endFrequencyHz, 0, 'f', 3),
         QStringLiteral("中心频率：%1 Hz").arg(signal.centerFrequencyHz, 0, 'f', 3),
@@ -1466,34 +1504,331 @@ QString MainWindow::signalDetails(const algorithm::DetectedSignal& signal, bool 
         QStringLiteral("最近出现：%1").arg(formatDetectionTime(signal.lastSeenNs, fileSource)),
         QStringLiteral("firstSeenNs：%1 | lastSeenNs：%2").arg(signal.firstSeenNs).arg(signal.lastSeenNs),
         QStringLiteral("出现次数：%1").arg(signal.occurrenceCount),
-        QStringLiteral("信号类型：未分类 | 告警等级：—（未接入）"),
+        QStringLiteral("信号类型：未分类"),
         fileSource ? QStringLiteral("回放时间由文件帧位置与帧率生成，与实际播放速度无关。")
                    : QStringLiteral("硬件时间相对本轮首个显示帧；负值表示更早的观测，不是日历时间。")};
+    if (businessSignal.source == policy::PolicySignalSource::Whitelist) {
+        details << QStringLiteral("白名单频段：%1 ~ %2 Hz")
+            .arg(signal.startFrequencyHz, 0, 'f', 3)
+            .arg(signal.endFrequencyHz, 0, 'f', 3);
+        details << QStringLiteral("代表原始信号 ID：%1")
+            .arg(businessSignal.representativeSignalId);
+        QStringList originalIds;
+        for (const auto id : businessSignal.originalSignalIds) originalIds << QString::number(id);
+        details << QStringLiteral("归并原始信号：%1")
+            .arg(originalIds.isEmpty() ? QStringLiteral("无") : originalIds.join(QStringLiteral("、")));
+    }
+    if (const auto* annotation = annotationFor(businessSignal.source, businessSignal.id)) {
+        QStringList names;
+        for (const auto& name : annotation->whitelistNames) names << QString::fromStdString(name);
+        details << QStringLiteral("白名单：%1").arg(names.isEmpty() ? QStringLiteral("无") : names.join(QStringLiteral("、")));
+        const auto level = annotation->level == policy::AlarmLevel::Critical ? QStringLiteral("严重")
+            : annotation->level == policy::AlarmLevel::General ? QStringLiteral("一般") : QStringLiteral("无");
+        const auto state = annotation->state == policy::AlarmState::Pending ? QStringLiteral("待确认")
+            : annotation->state == policy::AlarmState::PendingClear ? QStringLiteral("待解除")
+            : annotation->state == policy::AlarmState::Active ? QStringLiteral("活动") : QStringLiteral("无");
+        details << QStringLiteral("告警等级：%1 | 状态：%2").arg(level, state);
+        QStringList matched;
+        for (const auto& rule : annotation->ruleMatches)
+            if (rule.matched) matched << QString::fromStdString(rule.ruleName);
+        details << QStringLiteral("命中规则：%1").arg(matched.isEmpty() ? QStringLiteral("无") : matched.join(QStringLiteral("、")));
+    }
     return details.join(QLatin1Char('\n'));
+}
+
+const policy::SignalAnnotation* MainWindow::annotationFor(policy::PolicySignalSource source,
+                                                          std::int64_t signalId) const
+{
+    if (!m_policySnapshot) return nullptr;
+    const auto it = std::find_if(m_policySnapshot->annotations.begin(), m_policySnapshot->annotations.end(),
+        [source, signalId](const policy::SignalAnnotation& annotation) {
+            return annotation.source == source && annotation.signalId == signalId;
+        });
+    return it == m_policySnapshot->annotations.end() ? nullptr : &*it;
 }
 
 void MainWindow::updateSignalTable(const algorithm::DisplaySnapshot& snapshot)
 {
-    const auto& data = snapshot.detection;
     const bool fileSource = m_sourceCombo->currentData().toInt() == static_cast<int>(algorithm::SourceKind::File);
-    const int count = hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0;
+    const bool policyUsable = m_policySnapshot &&
+        m_policySnapshot->generation == snapshot.detection.generation &&
+        m_policySnapshot->detectionConfigVersion == snapshot.detection.configVersion &&
+        m_policySnapshot->sequence <= snapshot.frame.sequence;
+    if (!policyUsable) return;
+    const int count = static_cast<int>(m_policySnapshot->businessSignals.size());
     m_signalTable->setRowCount(count);
     for (int row = 0; row < count; ++row) {
-        const auto& signal = data.detections.at(static_cast<std::size_t>(row));
-        auto* id = tableItem(QString::number(signal.id));
-        const auto details = signalDetails(signal, fileSource);
+        const auto& businessSignal = m_policySnapshot->businessSignals.at(static_cast<std::size_t>(row));
+        const auto& signal = businessSignal.measurement;
+        auto* id = tableItem(QString::fromStdString(businessSignal.displayId));
+        const auto details = signalDetails(businessSignal, fileSource);
         id->setData(Qt::UserRole, details);
         id->setToolTip(details);
         m_signalTable->setItem(row, 0, id);
         m_signalTable->setItem(row, 1, tableItem(QString::number(signal.centerFrequencyHz / 1e6, 'f', 3)));
         m_signalTable->setItem(row, 2, tableItem(QString::number(signal.bandwidthHz / 1e3, 'f', 3)));
         m_signalTable->setItem(row, 3, tableItem(QStringLiteral("未分类")));
-        m_signalTable->setItem(row, 4, tableItem(QStringLiteral("—")));
+        QString alarmLevel = QStringLiteral("无");
+        if (const auto* annotation = annotationFor(businessSignal.source, businessSignal.id)) {
+            if (annotation->level == policy::AlarmLevel::Critical) alarmLevel = QStringLiteral("严重");
+            else if (annotation->level == policy::AlarmLevel::General) alarmLevel = QStringLiteral("一般");
+            if (annotation->state == policy::AlarmState::Pending) alarmLevel += QStringLiteral("（待确认）");
+            else if (annotation->state == policy::AlarmState::PendingClear) alarmLevel += QStringLiteral("（待解除）");
+            if (!annotation->whitelistNames.empty()) alarmLevel += QStringLiteral(" | 白名单");
+        }
+        m_signalTable->setItem(row, 4, tableItem(alarmLevel));
         auto* lastSeen = tableItem(formatDetectionTime(signal.lastSeenNs, fileSource));
         lastSeen->setToolTip(details);
         m_signalTable->setItem(row, 5, lastSeen);
         m_signalTable->setItem(row, 6, tableItem(QString::number(signal.occurrenceCount)));
     }
+}
+
+void MainWindow::applyPolicyConfiguration()
+{
+    if (!m_settingsPage) return;
+    QString error;
+    auto config = m_settingsPage->policyConfig(&error);
+    if (!error.isEmpty()) {
+        m_settingsPage->setDetectionFeedback(QStringLiteral("白名单与告警规则未应用：%1").arg(error));
+        return;
+    }
+    const auto previous = m_session.policyConfig();
+    config.version = std::max(config.version, previous.version + 1);
+    if (!m_settingsPage->acceptPolicyConfig(config, &error)) {
+        m_settingsPage->setDetectionFeedback(QStringLiteral("白名单与告警规则未应用：无法保存配置：%1").arg(error));
+        return;
+    }
+    if (!m_session.configurePolicy(config, error)) {
+        QString rollbackError;
+        m_settingsPage->acceptPolicyConfig(previous, &rollbackError);
+        m_settingsPage->setDetectionFeedback(QStringLiteral("白名单与告警规则未应用：%1").arg(error));
+        return;
+    }
+    m_policySnapshot.reset();
+    m_pendingPolicySnapshot.reset();
+    m_spectrum->setPolicySnapshot(nullptr);
+    m_signalTable->setRowCount(0);
+    m_criticalAlertLabel->setText(QStringLiteral("0"));
+    m_generalAlarmLabel->setText(QStringLiteral("0"));
+    m_signalTotalLabel->setText(QStringLiteral("0"));
+    if (m_displaySnapshot) {
+        updateDetectionStatus(m_displaySnapshot.get());
+    }
+}
+
+void MainWindow::onPolicySnapshot(const policy::PolicySnapshotPtr& snapshot)
+{
+    if (!snapshot || snapshot->generation < m_minimumGeneration) return;
+    const policy::PolicySnapshot* latest = nullptr;
+    if (m_pendingPolicySnapshot) latest = m_pendingPolicySnapshot.get();
+    else if (m_policySnapshot) latest = m_policySnapshot.get();
+    if (latest && snapshot->generation == latest->generation &&
+        (snapshot->sequence < latest->sequence ||
+         (snapshot->sequence == latest->sequence &&
+          snapshot->revision < latest->revision))) return;
+    // Policy callbacks can arrive between two raw-frame publications. Keep
+    // only the newest result and commit it from refreshDisplay(), so markers,
+    // table and statistics share one UI cadence and cannot flash independently.
+    m_pendingPolicySnapshot = snapshot;
+}
+
+void MainWindow::onAlarmEvents(const std::vector<policy::AlarmEventChange>& changes)
+{
+    if (changes.empty()) return;
+    m_policyEventRevision = std::max(m_policyEventRevision, changes.back().revision);
+    statusBar()->showMessage(QStringLiteral("告警事件已更新（本地历史已排队保存）"), 2500);
+}
+
+void MainWindow::onPolicyStatus(const QString& message)
+{
+    statusBar()->showMessage(message, 4000);
+}
+
+void MainWindow::showAlarmHistory()
+{
+    std::vector<policy::AlarmEvent> events;
+    QString error;
+    if (!m_session.loadAlarmHistory(events, error)) {
+        QMessageBox::warning(this, QStringLiteral("告警历史不可用"), error);
+        return;
+    }
+    QDialog dialog(this);
+    dialog.setWindowTitle(QStringLiteral("告警历史"));
+    dialog.resize(1180, 560);
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* filters = new QHBoxLayout;
+    auto* levelFilter = new QComboBox(&dialog);
+    levelFilter->addItems({QStringLiteral("全部等级"), QStringLiteral("一般"), QStringLiteral("严重")});
+    auto* acknowledgementFilter = new QComboBox(&dialog);
+    acknowledgementFilter->addItems({QStringLiteral("全部确认状态"), QStringLiteral("未确认"), QStringLiteral("已确认")});
+    auto* sourceFilter = new QLineEdit(&dialog);
+    sourceFilter->setPlaceholderText(QStringLiteral("源名称"));
+    auto* ruleFilter = new QLineEdit(&dialog);
+    ruleFilter->setPlaceholderText(QStringLiteral("规则 ID"));
+    auto* whitelistFilter = new QLineEdit(&dialog);
+    whitelistFilter->setPlaceholderText(QStringLiteral("白名单 ID"));
+    auto* activeOnly = new QCheckBox(QStringLiteral("仅活动"), &dialog);
+    filters->addWidget(new QLabel(QStringLiteral("筛选"), &dialog));
+    filters->addWidget(levelFilter); filters->addWidget(acknowledgementFilter);
+    filters->addWidget(sourceFilter); filters->addWidget(ruleFilter);
+    filters->addWidget(whitelistFilter); filters->addWidget(activeOnly);
+    filters->addStretch();
+    layout->addLayout(filters);
+    auto* table = new QTableWidget(static_cast<int>(events.size()), 11, &dialog);
+    table->setObjectName(QStringLiteral("isaTable"));
+    table->setHorizontalHeaderLabels({QStringLiteral("事件 ID"), QStringLiteral("业务 ID"), QStringLiteral("来源"),
+        QStringLiteral("频段(MHz)"), QStringLiteral("带宽(kHz)"), QStringLiteral("当前/最高等级"),
+        QStringLiteral("CNR(dB)"), QStringLiteral("状态"), QStringLiteral("确认"),
+        QStringLiteral("源"), QStringLiteral("结束原因")});
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    table->setSelectionBehavior(QAbstractItemView::SelectRows);
+    table->setSelectionMode(QAbstractItemView::SingleSelection);
+    auto levelText = [](policy::AlarmLevel level) {
+        return level == policy::AlarmLevel::Critical ? QStringLiteral("严重")
+            : level == policy::AlarmLevel::General ? QStringLiteral("一般") : QStringLiteral("无");
+    };
+    auto stateText = [](policy::AlarmState state) {
+        return state == policy::AlarmState::Active ? QStringLiteral("活动")
+            : state == policy::AlarmState::Pending ? QStringLiteral("待确认")
+            : state == policy::AlarmState::PendingClear ? QStringLiteral("待解除")
+            : QStringLiteral("已解除");
+    };
+    for (int row = 0; row < table->rowCount(); ++row) {
+        const auto& event = events.at(static_cast<std::size_t>(row));
+        auto* id = tableItem(QString::fromStdString(event.eventId));
+        id->setData(Qt::UserRole, QString::fromStdString(event.eventId));
+        table->setItem(row, 0, id);
+        const auto businessId = event.displayId.empty()
+            ? QString::number(event.signalId) : QString::fromStdString(event.displayId);
+        table->setItem(row, 1, tableItem(businessId));
+        table->setItem(row, 2, tableItem(event.source == policy::PolicySignalSource::Whitelist
+            ? QStringLiteral("白名单替换") : QStringLiteral("原始检测")));
+        table->setItem(row, 3, tableItem(QStringLiteral("%1 ~ %2")
+            .arg(event.startFrequencyHz / 1e6, 0, 'f', 3).arg(event.endFrequencyHz / 1e6, 0, 'f', 3)));
+        table->setItem(row, 4, tableItem(QString::number(event.bandwidthHz / 1e3, 'f', 3)));
+        table->setItem(row, 5, tableItem(levelText(event.currentLevel) + QStringLiteral(" / ") + levelText(event.highestLevel)));
+        table->setItem(row, 6, tableItem(QString::number(event.cnrDb, 'f', 2)));
+        table->setItem(row, 7, tableItem(stateText(event.state)));
+        table->setItem(row, 8, tableItem(event.acknowledged ? QStringLiteral("已确认") : QStringLiteral("未确认")));
+        table->setItem(row, 9, tableItem(QString::fromStdString(event.sourceName)));
+        table->setItem(row, 10, tableItem(QString::fromStdString(event.endReason)));
+    }
+    const auto applyFilters = [&, table, levelFilter, acknowledgementFilter, sourceFilter,
+                               ruleFilter, whitelistFilter, activeOnly] {
+        const auto sourceText = sourceFilter->text().trimmed();
+        const auto ruleText = ruleFilter->text().trimmed();
+        const auto whitelistText = whitelistFilter->text().trimmed();
+        for (int row = 0; row < table->rowCount(); ++row) {
+            const auto& event = events.at(static_cast<std::size_t>(row));
+            bool visible = levelFilter->currentIndex() == 0 ||
+                (levelFilter->currentIndex() == 1 && event.currentLevel == policy::AlarmLevel::General) ||
+                (levelFilter->currentIndex() == 2 && event.currentLevel == policy::AlarmLevel::Critical);
+            visible = visible && (acknowledgementFilter->currentIndex() == 0 ||
+                (acknowledgementFilter->currentIndex() == 1 && !event.acknowledged) ||
+                (acknowledgementFilter->currentIndex() == 2 && event.acknowledged));
+            visible = visible && (sourceText.isEmpty() || QString::fromStdString(event.sourceName).contains(sourceText, Qt::CaseInsensitive));
+            if (visible && !ruleText.isEmpty()) {
+                bool found = false;
+                for (const auto id : event.matchedRuleIds) if (QString::number(id) == ruleText) found = true;
+                visible = found;
+            }
+            if (visible && !whitelistText.isEmpty()) {
+                bool found = false;
+                for (const auto id : event.matchedWhitelistIds) if (QString::number(id) == whitelistText) found = true;
+                visible = found;
+            }
+            if (activeOnly->isChecked())
+                visible = visible && (event.state == policy::AlarmState::Active || event.state == policy::AlarmState::PendingClear);
+            table->setRowHidden(row, !visible);
+        }
+    };
+    connect(levelFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, [applyFilters] { applyFilters(); });
+    connect(acknowledgementFilter, QOverload<int>::of(&QComboBox::currentIndexChanged), &dialog, [applyFilters] { applyFilters(); });
+    connect(sourceFilter, &QLineEdit::textChanged, &dialog, [applyFilters] { applyFilters(); });
+    connect(ruleFilter, &QLineEdit::textChanged, &dialog, [applyFilters] { applyFilters(); });
+    connect(whitelistFilter, &QLineEdit::textChanged, &dialog, [applyFilters] { applyFilters(); });
+    connect(activeOnly, &QCheckBox::toggled, &dialog, [applyFilters] { applyFilters(); });
+    layout->addWidget(table, 1);
+    auto* buttons = new QHBoxLayout;
+    const auto makeAction = [&dialog](const QString& text) {
+        auto* button = new QPushButton(text, &dialog);
+        button->setMinimumHeight(34);
+        return button;
+    };
+    auto* acknowledge = makeAction(QStringLiteral("确认选中事件"));
+    auto* exportCsv = makeAction(QStringLiteral("导出 CSV"));
+    auto* exportJson = makeAction(QStringLiteral("导出 JSON"));
+    buttons->addWidget(acknowledge); buttons->addWidget(exportCsv); buttons->addWidget(exportJson);
+    buttons->addStretch();
+    auto* close = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    buttons->addWidget(close);
+    layout->addLayout(buttons);
+    connect(close, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(acknowledge, &QPushButton::clicked, &dialog, [this, table] {
+        const int row = table->currentRow();
+        if (row < 0 || !table->item(row, 0)) return;
+        bool ok = false;
+        const auto note = QInputDialog::getText(this, QStringLiteral("确认告警事件"),
+            QStringLiteral("确认备注（可选）："), QLineEdit::Normal, QString(), &ok);
+        if (ok && m_session.acknowledgeAlarm(table->item(row, 0)->data(Qt::UserRole).toString(), note))
+            statusBar()->showMessage(QStringLiteral("确认请求已提交。请重新打开历史查看最新状态。"), 4000);
+    });
+    auto csvEscape = [](const QString& value) {
+        QString result = value; result.replace(QLatin1Char('"'), QStringLiteral("\"\""));
+        return QStringLiteral("\"") + result + QStringLiteral("\"");
+    };
+    connect(exportCsv, &QPushButton::clicked, &dialog, [this, &events, csvEscape] {
+        const auto path = QFileDialog::getSaveFileName(this, QStringLiteral("导出告警 CSV"),
+            QStringLiteral("alarm_history.csv"), QStringLiteral("CSV files (*.csv)"));
+        if (path.isEmpty()) return;
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+        QTextStream out(&file);
+        out << QStringLiteral("event_id,business_id,source_type,signal_id,representative_signal_id,original_signal_ids,start_hz,end_hz,bandwidth_hz,current_level,highest_level,state,acknowledged,policy_version,source,end_reason\n");
+        for (const auto& event : events) {
+            out << csvEscape(QString::fromStdString(event.eventId)) << ','
+                << csvEscape(event.displayId.empty() ? QString::number(event.signalId) : QString::fromStdString(event.displayId)) << ','
+                << static_cast<int>(event.source) << ',' << event.signalId << ',' << event.representativeSignalId << ','
+                << csvEscape([&event] { QStringList values; for (const auto id : event.originalSignalIds) values << QString::number(id); return values.join(QLatin1Char(',')); }()) << ','
+                << event.startFrequencyHz << ',' << event.endFrequencyHz << ',' << event.bandwidthHz << ','
+                << static_cast<int>(event.currentLevel) << ',' << static_cast<int>(event.highestLevel) << ','
+                << static_cast<int>(event.state) << ',' << (event.acknowledged ? 1 : 0) << ','
+                << event.policyVersion << ','
+                << csvEscape(QString::fromStdString(event.sourceName)) << ','
+                << csvEscape(QString::fromStdString(event.endReason)) << '\n';
+        }
+        statusBar()->showMessage(QStringLiteral("告警历史已导出：%1").arg(path), 4000);
+    });
+    connect(exportJson, &QPushButton::clicked, &dialog, [this, &events] {
+        const auto path = QFileDialog::getSaveFileName(this, QStringLiteral("导出告警 JSON"),
+            QStringLiteral("alarm_history.json"), QStringLiteral("JSON files (*.json)"));
+        if (path.isEmpty()) return;
+        QJsonArray array;
+        for (const auto& event : events) {
+            QJsonObject object{{QStringLiteral("eventId"), QString::fromStdString(event.eventId)},
+                {QStringLiteral("businessId"), event.displayId.empty() ? QString::number(event.signalId) : QString::fromStdString(event.displayId)},
+                {QStringLiteral("sourceType"), static_cast<int>(event.source)}, {QStringLiteral("signalId"), event.signalId},
+                {QStringLiteral("representativeSignalId"), event.representativeSignalId},
+                {QStringLiteral("originalSignalIds"), [&event] {
+                    QJsonArray ids; for (const auto id : event.originalSignalIds) ids.append(id); return ids;
+                }()},
+                {QStringLiteral("startFrequencyHz"), event.startFrequencyHz},
+                {QStringLiteral("endFrequencyHz"), event.endFrequencyHz}, {QStringLiteral("bandwidthHz"), event.bandwidthHz},
+                {QStringLiteral("currentLevel"), static_cast<int>(event.currentLevel)},
+                {QStringLiteral("highestLevel"), static_cast<int>(event.highestLevel)},
+                {QStringLiteral("state"), static_cast<int>(event.state)}, {QStringLiteral("acknowledged"), event.acknowledged},
+                {QStringLiteral("policyVersion"), static_cast<qint64>(event.policyVersion)},
+                {QStringLiteral("source"), QString::fromStdString(event.sourceName)},
+                {QStringLiteral("endReason"), QString::fromStdString(event.endReason)}};
+            array.append(object);
+        }
+        QFile file(path);
+        if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+        file.write(QJsonDocument(array).toJson(QJsonDocument::Indented));
+        statusBar()->showMessage(QStringLiteral("告警历史已导出：%1").arg(path), 4000);
+    });
+    dialog.exec();
 }
 
 void MainWindow::onStateChanged(const QString& state)
@@ -1578,6 +1913,230 @@ void MainWindow::mouseReleaseEvent(QMouseEvent* event)
 {
     m_dragging = false;
     QMainWindow::mouseReleaseEvent(event);
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    if (event) {
+        auto* watchedWidget = qobject_cast<QWidget*>(watched);
+        if (watchedWidget && watchedWidget->window() == this) {
+            if (event->type() == QEvent::MouseMove) {
+                auto* mouseEvent = static_cast<QMouseEvent*>(event);
+                if (m_manualResizing) {
+                    applyManualResize(mouseEvent->globalPosition().toPoint());
+                    mouseEvent->accept();
+                    return true;
+                }
+                updateResizeCursor(mouseEvent->globalPosition().toPoint());
+            } else if (event->type() == QEvent::MouseButtonPress) {
+                auto* mouseEvent = static_cast<QMouseEvent*>(event);
+                if (mouseEvent->button() == Qt::LeftButton && !isMaximized() &&
+                    !isFullScreen()) {
+                    const Qt::Edges edges = resizeEdgesAt(
+                        mouseEvent->globalPosition().toPoint());
+                    if (edges != Qt::Edges()) {
+                        restoreResizeCursor();
+                        if (windowHandle() && windowHandle()->startSystemResize(edges)) {
+                            mouseEvent->accept();
+                            return true;
+                        }
+                        m_manualResizing = true;
+                        m_resizeEdges = edges;
+                        m_resizePressPosition = mouseEvent->globalPosition().toPoint();
+                        m_resizeGeometry = geometry();
+                        grabMouse();
+                        mouseEvent->accept();
+                        return true;
+                    }
+                }
+            } else if (event->type() == QEvent::MouseButtonRelease &&
+                       m_manualResizing) {
+                auto* mouseEvent = static_cast<QMouseEvent*>(event);
+                if (mouseEvent->button() == Qt::LeftButton) {
+                    finishManualResize();
+                    mouseEvent->accept();
+                    return true;
+                }
+            } else if (event->type() == QEvent::WindowDeactivate) {
+                restoreResizeCursor();
+            }
+        }
+    }
+
+    if (watched == m_titleBar && event) {
+        switch (event->type()) {
+        case QEvent::MouseButtonDblClick: {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (mouseEvent->button() == Qt::LeftButton) {
+                toggleMaximize();
+                mouseEvent->accept();
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseButtonPress: {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (mouseEvent->button() == Qt::LeftButton && !isMaximized()) {
+                m_dragging = true;
+                m_dragOffset = mouseEvent->globalPosition().toPoint() - frameGeometry().topLeft();
+                m_titleBar->grabMouse();
+                mouseEvent->accept();
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseMove: {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (m_dragging && !isMaximized() &&
+                (mouseEvent->buttons() & Qt::LeftButton)) {
+                move(mouseEvent->globalPosition().toPoint() - m_dragOffset);
+                mouseEvent->accept();
+                return true;
+            }
+            break;
+        }
+        case QEvent::MouseButtonRelease: {
+            auto* mouseEvent = static_cast<QMouseEvent*>(event);
+            if (mouseEvent->button() == Qt::LeftButton && m_dragging) {
+                m_dragging = false;
+                m_titleBar->releaseMouse();
+                mouseEvent->accept();
+                return true;
+            }
+            break;
+        }
+        default:
+            break;
+        }
+    }
+    return QMainWindow::eventFilter(watched, event);
+}
+
+Qt::Edges MainWindow::resizeEdgesAt(const QPoint& globalPosition) const
+{
+    if (isMaximized() || isFullScreen()) return {};
+    const QPoint localPosition = mapFromGlobal(globalPosition);
+    constexpr int border = 10;
+    if (!rect().contains(localPosition)) return {};
+
+    Qt::Edges edges;
+    if (localPosition.x() < border) edges |= Qt::LeftEdge;
+    if (localPosition.x() >= width() - border) edges |= Qt::RightEdge;
+    if (localPosition.y() < border) edges |= Qt::TopEdge;
+    if (localPosition.y() >= height() - border) edges |= Qt::BottomEdge;
+    return edges;
+}
+
+void MainWindow::updateResizeCursor(const QPoint& globalPosition)
+{
+    const Qt::Edges edges = resizeEdgesAt(globalPosition);
+    if (edges == Qt::Edges()) {
+        restoreResizeCursor();
+        return;
+    }
+
+    Qt::CursorShape shape = Qt::ArrowCursor;
+    const bool horizontal = edges.testFlag(Qt::LeftEdge) || edges.testFlag(Qt::RightEdge);
+    const bool vertical = edges.testFlag(Qt::TopEdge) || edges.testFlag(Qt::BottomEdge);
+    if (horizontal && vertical) {
+        const bool forwardDiagonal =
+            (edges.testFlag(Qt::LeftEdge) && edges.testFlag(Qt::TopEdge)) ||
+            (edges.testFlag(Qt::RightEdge) && edges.testFlag(Qt::BottomEdge));
+        shape = forwardDiagonal ? Qt::SizeFDiagCursor : Qt::SizeBDiagCursor;
+    } else if (horizontal) {
+        shape = Qt::SizeHorCursor;
+    } else if (vertical) {
+        shape = Qt::SizeVerCursor;
+    }
+
+    if (!m_resizeCursorOverridden) {
+        QApplication::setOverrideCursor(QCursor(shape));
+        m_resizeCursorOverridden = true;
+    } else {
+        QApplication::changeOverrideCursor(QCursor(shape));
+    }
+}
+
+void MainWindow::restoreResizeCursor()
+{
+    if (m_resizeCursorOverridden) {
+        QApplication::restoreOverrideCursor();
+        m_resizeCursorOverridden = false;
+    }
+}
+
+void MainWindow::applyManualResize(const QPoint& globalPosition)
+{
+    if (!m_manualResizing) return;
+    const QPoint delta = globalPosition - m_resizePressPosition;
+    QRect nextGeometry = m_resizeGeometry;
+    const int minimumWidth = std::max(1, minimumSize().width());
+    const int minimumHeight = std::max(1, minimumSize().height());
+
+    if (m_resizeEdges.testFlag(Qt::LeftEdge)) {
+        nextGeometry.setLeft(std::min(m_resizeGeometry.left() + delta.x(),
+                                      m_resizeGeometry.right() - minimumWidth + 1));
+    }
+    if (m_resizeEdges.testFlag(Qt::RightEdge)) {
+        nextGeometry.setRight(std::max(m_resizeGeometry.right() + delta.x(),
+                                       m_resizeGeometry.left() + minimumWidth - 1));
+    }
+    if (m_resizeEdges.testFlag(Qt::TopEdge)) {
+        nextGeometry.setTop(std::min(m_resizeGeometry.top() + delta.y(),
+                                     m_resizeGeometry.bottom() - minimumHeight + 1));
+    }
+    if (m_resizeEdges.testFlag(Qt::BottomEdge)) {
+        nextGeometry.setBottom(std::max(m_resizeGeometry.bottom() + delta.y(),
+                                        m_resizeGeometry.top() + minimumHeight - 1));
+    }
+    setGeometry(nextGeometry);
+}
+
+void MainWindow::finishManualResize()
+{
+    if (!m_manualResizing) return;
+    m_manualResizing = false;
+    m_resizeEdges = {};
+    releaseMouse();
+    restoreResizeCursor();
+}
+
+bool MainWindow::nativeEvent(const QByteArray& eventType, void* message,
+                             qintptr* result)
+{
+#ifdef Q_OS_WIN
+    if ((eventType == QByteArrayLiteral("windows_generic_MSG") ||
+         eventType == QByteArrayLiteral("windows_dispatcher_MSG")) &&
+        message && result && !isMaximized() && !isFullScreen()) {
+        const auto* nativeMessage = static_cast<const MSG*>(message);
+        if (nativeMessage->message == WM_NCHITTEST) {
+            const QPoint localPosition = mapFromGlobal(QCursor::pos());
+            constexpr int border = 8;
+            const bool left = localPosition.x() >= 0 && localPosition.x() < border;
+            const bool right = localPosition.x() >= width() - border &&
+                               localPosition.x() < width();
+            const bool top = localPosition.y() >= 0 && localPosition.y() < border;
+            const bool bottom = localPosition.y() >= height() - border &&
+                                localPosition.y() < height();
+
+            if (top && left) *result = HTTOPLEFT;
+            else if (top && right) *result = HTTOPRIGHT;
+            else if (bottom && left) *result = HTBOTTOMLEFT;
+            else if (bottom && right) *result = HTBOTTOMRIGHT;
+            else if (left) *result = HTLEFT;
+            else if (right) *result = HTRIGHT;
+            else if (top) *result = HTTOP;
+            else if (bottom) *result = HTBOTTOM;
+            else return QMainWindow::nativeEvent(eventType, message, result);
+            return true;
+        }
+    }
+#else
+    Q_UNUSED(eventType);
+    Q_UNUSED(message);
+    Q_UNUSED(result);
+#endif
+    return QMainWindow::nativeEvent(eventType, message, result);
 }
 
 } // namespace scn::app

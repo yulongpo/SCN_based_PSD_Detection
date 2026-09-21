@@ -22,7 +22,7 @@ struct SpectrumRenderRequest
     std::uint64_t generation = 0;
     double viewStartHz = 0.0;
     double viewEndHz = 0.0;
-    double displayMinDb = -120.0;
+    double displayMinDb = -80.0;
     double displayMaxDb = 0.0;
     int plotWidth = 0;
     int plotHeight = 0;
@@ -39,7 +39,7 @@ struct SpectrumRenderResult
     std::uint64_t frameSequence = 0;
     double viewStartHz = 0.0;
     double viewEndHz = 0.0;
-    double displayMinDb = -120.0;
+    double displayMinDb = -80.0;
     double displayMaxDb = 0.0;
     int plotWidth = 0;
     int plotHeight = 0;
