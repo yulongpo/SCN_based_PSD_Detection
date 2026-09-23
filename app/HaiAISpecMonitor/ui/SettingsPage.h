@@ -11,6 +11,7 @@
 
 class QStackedWidget;
 class QCheckBox;
+class QComboBox;
 class QDoubleSpinBox;
 class QLabel;
 class QSpinBox;
@@ -96,13 +97,19 @@ private:
     QTableWidget* m_ruleTable = nullptr;
     QTableWidget* m_whitelistTable = nullptr;
     QCheckBox* m_detectionEnabled = nullptr;
+    QComboBox* m_detectionBackend = nullptr;
     QLineEdit* m_modelPath = nullptr;
+    QLineEdit* m_ffscnModelPath = nullptr;
     QSpinBox* m_gpuIndex = nullptr;
     QSpinBox* m_accumulatorFrames = nullptr;
     QDoubleSpinBox* m_confidence = nullptr;
     QDoubleSpinBox* m_nmsIou = nullptr;
     QSpinBox* m_topK = nullptr;
     QSpinBox* m_maxCandidates = nullptr;
+    QDoubleSpinBox* m_ffscnConfidence = nullptr;
+    QDoubleSpinBox* m_ffscnNmsIou = nullptr;
+    QSpinBox* m_ffscnTopK = nullptr;
+    QSpinBox* m_ffscnMaxCandidates = nullptr;
     QSpinBox* m_windowStep = nullptr;
     QLabel* m_windowOverlap = nullptr;
     QDoubleSpinBox* m_cnr = nullptr;

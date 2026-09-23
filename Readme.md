@@ -11,7 +11,7 @@
 - Direct2D 频谱图和瀑布图绘制后端，支持高 DPI 显示；
 - 频谱图与瀑布图频率视窗同步；
 - ISA 风格的频率输入和坐标轴交互。
-- ISA TensorRT SCN 大带宽检测、16 帧平均/最大谱融合及轻量跨帧跟踪；
+- SCN 与 FFSCN 17 阶 TensorRT 检测后端，可在系统设置切换；
 - 独立采集/检测线程、有界通道和可复现的 DetectionLab 离线诊断工具。
 
 ## 当前架构
@@ -27,7 +27,7 @@ tests/                      CPU 算法、通道、异步轮次、文件回放和
 app/HaiAISpecMonitor/legacy/ 原 ISA UI、资源和依赖快照，仅供迁移参考
 ```
 
-`algorithm/DetectionEngine` 已实现 SCN 检测链路，生产推理仅使用 ISA 的 TensorRT
+`algorithm/DetectionEngine` 提供 SCN 和 FFSCN 检测链路，生产推理仅使用 TensorRT
 engine，不引入 ONNX Runtime 或 Python。白名单、告警规则及信号分类不属于该算法。
 BB60C 已接入 Signal Hound BB API SDK，运行时会打开真实
 设备并读取 dBm 扫频；Harogic 仍保留适配器边界和占位数据，状态栏会显示其
@@ -152,32 +152,33 @@ ISA 风格色阶；频率范围与刻度统一由上方导航栏提供，瀑布�
 步进 `5 dB`，默认 `80 dB`，保存到 `ui/displayDynamicRangeDb`。两图上限为当前参考电平，
 下限为“参考电平−动态范围”；修改后立即重绘，瀑布历史和频谱最大／平均保持状态不清空。
 
-“系统设置 → SCN 检测”保存独立的 `detection/*` 参数。算法累积默认 16 帧，
+“系统设置 → 信号检测”保存独立的 `detection/*` 参数。SCN 默认累计 16 帧，
 与 UI 最近 100 帧最大谱/平均谱独立。切换显示开关不会改变检测结果。
-更换模型、GPU 或切换检测开关需先停止监测；阈值更新在下一处理周期生效。
-SCN 草稿仅由“应用 SCN 设置”提交，开始采集使用已接受的检测配置。
+FFSCN 使用最近 10 帧原始谱；短谱插值至距离最近且 N≥13 的 2^N 频点，长谱按 131072 点滑窗。
+更换后端、模型、GPU 或切换检测开关需先停止监测；阈值更新在下一处理周期生效。
+检测草稿仅由“应用检测设置”提交，开始采集使用已接受的检测配置。
 
-## SCN 检测
+## 检测后端
 
 ```text
-原始 PSD → 最近16帧平均谱/最大谱 → 32768点切窗（步长16384）
-         → min/max归一化 → ISA TensorRT SCN → 解码/NMS/CNR
-         → 跨窗融合/双分支融合 → 约束关联/边界稳定/稳定频段重测 → 白名单与告警/UI结果
+SCN：原始 PSD → 最近16帧平均谱/最大谱 → 32768点切窗（步长16384）
+    → min/max归一化 → ISA TensorRT SCN → 解码/NMS/CNR → 融合 → 公共跟踪/告警/UI
+FFSCN：最近10帧原始 PSD → 频宽映射/矩阵标准化 → TensorRT FFSCN 17阶 → 解码/NMS/CNR → 公共跟踪/告警/UI
 ```
 
-从首帧开始渐进检测，满 16 帧后保持滑动窗口。默认置信度 0.4、NMS IoU 0.5、
+从首帧开始渐进检测，满 16 帧后保持滑动窗口。默认置信度 0.1、NMS IoU 0.5、
 CNR 3 dB；窗口尾部按最低值补齐，仅有效原始区域参与电平计算。
 频率定位使用 `startFrequencyHz + binIndex * binWidthHz`，不对整谱插值或抽样。
 
 信号表与检测标记显示应用层整理后的业务结果，信号类型为“未分类”。白名单和告警规则在
 应用层独立执行：命中白名单的原始结果会被移除，并由对应白名单配置频段生成 `W-<ID>`
 业务结果；白名单仍不会抑制告警。模型不可用时显示具体错误，原始绘图仍可工作。
-完整参数、数据语义、部署和验收见 [SCN 开发与验收说明](docs/scn_detection.md)。
+SCN 完整参数见 [SCN 开发与验收说明](docs/scn_detection.md)；FFSCN 模型契约、插值、engine 部署和验收见 [FFSCN 后端方案](docs/ffscn_backend_plan.md)。
 
 跟踪使用频段重叠、带宽比和中心距离共同约束的一对一关联。默认用最近 5 次已接受边界的中位数
 与 `α=0.35` EMA 抑制抖动；大幅突变需唯一关联并连续确认 3 个不同检测帧。稳定频段在完整累积谱上
 重新测量电平和 CNR，白名单、告警、信号表、标记和回放结果使用稳定结果；原始融合结果仍保留用于详情
-和对照。可在“系统设置 → SCN 检测 → 跟踪与边界稳定”调整稳定开关、门限、历史窗口、平滑系数和确认次数。
+和对照。可在“系统设置 → 信号检测 → 跟踪与边界稳定”调整稳定开关、门限、历史窗口、平滑系数和确认次数。
 
 ## 白名单、告警规则与历史
 
@@ -255,6 +256,8 @@ dBm 频谱，SDK 或运行库缺失时明确显示为“未接入”，不会回
 | `SCN_ENABLE_TENSORRT` | `ON` |
 | `SCN_TENSORRT_ROOT` | `${sourceDir}/third_party/tensorrt` |
 | `SCN_MODEL_SOURCE` | `${sourceDir}/models/scn_model.engine` |
+| `SCN_FFSCN_MODEL_SOURCE` | `${sourceDir}/models/ffscn_17.engine` |
+| `SCN_FFSCN_MANIFEST_SOURCE` | `${sourceDir}/models/ffscn_17.manifest.json` |
 | `CUDAToolkit_ROOT` | `C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4` |
 
 使用 TensorRT 10.11.0，C++ Runtime API 不编译 CUDA 核函数。部署程序会复制模型和
@@ -267,10 +270,10 @@ TensorRT SDK 自带的配套运行库（含 CUDA Runtime 12.9），不要用 Too
 ## 依赖包部署
 
 BB60C、Harogic HTRA、TensorRT 的完整导入库和运行库，以及默认
-`models/scn_model.engine`，作为 GitHub Release 的依赖 ZIP 发布。部署到新机器时，
+`models/scn_model.engine`、`models/ffscn_17.engine` 和 FFSCN manifest，作为依赖 ZIP 发布。部署到新机器时，
 先克隆 `scn_dev` 分支，再从仓库的 Releases 页面下载对应版本的依赖包，并在仓库
 根目录解压，确保生成 `third_party/bb60c`、`third_party/harogic`、
-`third_party/tensorrt` 和 `models/scn_model.engine`。Qt 6.11.1 与 CUDA Toolkit
+`third_party/tensorrt`、两种 engine 和 FFSCN manifest。Qt 6.11.1 与 CUDA Toolkit
 不包含在该 ZIP 中，需要在目标机器单独安装。
 
 依赖目录和模型由现有 `.gitignore` 排除；源码仓库提交头文件和构建配置，Release

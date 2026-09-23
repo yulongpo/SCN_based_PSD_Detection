@@ -45,12 +45,12 @@ int main(int argc, char** argv)
     QCoreApplication app(argc, argv);
     QCoreApplication::setApplicationName("DetectionLab");
     QCommandLineParser parser;
-    parser.setApplicationDescription("ISA TensorRT SCN offline detection (no UI, whitelist or alarms).");
+    parser.setApplicationDescription("ISA offline SCN/FFSCN TensorRT detection (no UI, whitelist or alarms).");
     parser.addHelpOption();
     parser.addOptions({
         {"inspect-model", "Load and validate engine metadata, without executing inference."},
         {"file", "Input ISA DAT/BIN or TXT/CSV/ASC spectrum file.", "path"},
-        {"model", "TensorRT engine path; relative to executable directory.", "path"},
+        {"model", "TensorRT engine path overriding the selected backend; relative to executable directory.", "path"},
         {"config", "Detection config JSON; see --write-config.", "path"},
         {"write-config", "Create default/current config JSON and exit (no GPU access; refuses existing paths).", "path"},
         {"start-frame", "First zero-based file frame; starts with empty temporal history.", "index", "0"},
@@ -73,14 +73,26 @@ int main(int argc, char** argv)
                 throw std::runtime_error(std::string("Empty path for --") + name);
         auto config = scn::lab::readConfiguration(parser.value("config"));
         if (parser.isSet("inspect-model")) config.enabled = true;
-        if (parser.isSet("model")) config.detector.modelPath = parser.value("model").toStdString();
+        if (parser.isSet("model")) {
+            if (config.backend == scn::algorithm::DetectionBackend::Ffscn)
+                config.ffscn.modelPath = parser.value("model").toStdString();
+            else config.detector.modelPath = parser.value("model").toStdString();
+        }
+        auto& selectedModel = config.backend == scn::algorithm::DetectionBackend::Ffscn
+            ? config.ffscn.modelPath : config.detector.modelPath;
+        if (!selectedModel.empty() && QDir::isRelativePath(QString::fromStdString(selectedModel)))
+            selectedModel = QDir(app.applicationDirPath())
+                .absoluteFilePath(QString::fromStdString(selectedModel)).toStdString();
         if (!config.detector.modelPath.empty() && QDir::isRelativePath(QString::fromStdString(config.detector.modelPath)))
-            config.detector.modelPath = QDir(app.applicationDirPath())
-                .absoluteFilePath(QString::fromStdString(config.detector.modelPath)).toStdString();
+            config.detector.modelPath = QDir(app.applicationDirPath()).absoluteFilePath(
+                QString::fromStdString(config.detector.modelPath)).toStdString();
+        if (!config.ffscn.modelPath.empty() && QDir::isRelativePath(QString::fromStdString(config.ffscn.modelPath)))
+            config.ffscn.modelPath = QDir(app.applicationDirPath()).absoluteFilePath(
+                QString::fromStdString(config.ffscn.modelPath)).toStdString();
         std::string error;
         if (!scn::algorithm::validateConfig(config, error)) throw std::runtime_error(error);
         const QStringList protectedPaths{parser.value("file"), parser.value("model"), parser.value("config"), parser.value("compare"),
-                                          QString::fromStdString(config.detector.modelPath)};
+            QString::fromStdString(config.detector.modelPath), QString::fromStdString(config.ffscn.modelPath)};
         if (parser.isSet("write-config")) {
             if (parser.isSet("output") || parser.isSet("csv") || parser.isSet("dump") ||
                 parser.isSet("inspect-model") || parser.isSet("step"))
@@ -213,7 +225,7 @@ int main(int argc, char** argv)
         if (!outputPath.isEmpty()) scn::lab::openNewOutput(output, outputPath);
         if (!csvPath.isEmpty()) {
             scn::lab::openNewOutput(csv, csvPath);
-            const QByteArray header("fileFrameIndex,sequence,id,startHz,endHz,centerHz,bandwidthHz,confidence,signalDbm,noiseDbm,cnrDb,branch,firstSeenNs,lastSeenNs,occurrences,stableStartHz,stableEndHz,stableCenterHz,stableBandwidthHz,stableSignalDbm,stableNoiseDbm,stableCnrDb,boundaryState,pendingCount,requiredCount,measurementBranch,associationIoU,centerDistanceHz,bandwidthRatio\n");
+            const QByteArray header("fileFrameIndex,sequence,id,startHz,endHz,centerHz,bandwidthHz,confidence,signalDbm,noiseDbm,cnrDb,branch,measurementTimestampNs,firstSeenNs,lastSeenNs,occurrences,stableStartHz,stableEndHz,stableCenterHz,stableBandwidthHz,stableSignalDbm,stableNoiseDbm,stableCnrDb,boundaryState,pendingCount,requiredCount,measurementBranch,associationIoU,centerDistanceHz,bandwidthRatio\n");
             if (csv.write(header) != header.size() || !csv.flush()) throw std::runtime_error("CSV header write failed.");
         }
         if (parser.isSet("compare")) {
@@ -279,7 +291,15 @@ int main(int argc, char** argv)
                         .arg(static_cast<qulonglong>(fileIndex)).arg(parse.errorString()).toStdString());
                 // Validate both full records before emitting any comparison.
                 // Valid differences/unmatched signals are reported, not failed.
-                jsonLine(comparison, scn::lab::compareResults(expected.object(), json, frame.binWidthHz));
+                if (result.stage == scn::algorithm::DetectionStage::WarmingUp ||
+                    expected.object().value("stage").toInt(-1) == static_cast<int>(scn::algorithm::DetectionStage::WarmingUp)) {
+                    jsonLine(comparison, {{"fileFrameIndex", static_cast<qint64>(fileIndex)},
+                        {"compared", false}, {"reason", "one backend is warming up its temporal input window"},
+                        {"actualStage", static_cast<int>(result.stage)},
+                        {"referenceStage", expected.object().value("stage")}});
+                } else {
+                    jsonLine(comparison, scn::lab::compareResults(expected.object(), json, frame.binWidthHz));
+                }
             }
             if (csv.isOpen()) {
                 QTextStream stream(&csv);
@@ -293,7 +313,8 @@ int main(int argc, char** argv)
                     stream << fileIndex << ',' << frame.sequence << ',' << s.id << ',' << s.startFrequencyHz << ','
                            << s.endFrequencyHz << ',' << s.centerFrequencyHz << ',' << s.bandwidthHz << ','
                            << s.confidence << ',' << s.signalLevelDbm << ',' << s.noiseLevelDbm << ',' << s.snrDb << ','
-                           << static_cast<int>(s.branch) << ',' << s.firstSeenNs << ',' << s.lastSeenNs << ',' << s.occurrenceCount;
+                           << static_cast<int>(s.branch) << ',' << s.measurementTimestampNs << ','
+                           << s.firstSeenNs << ',' << s.lastSeenNs << ',' << s.occurrenceCount;
                     const auto found = trackedById.find(s.id);
                     if (found != trackedById.end()) {
                         const auto& item = *found->second;
@@ -314,7 +335,9 @@ int main(int argc, char** argv)
                 if (stream.status() != QTextStream::Ok || !csv.flush()) throw std::runtime_error("CSV write failed.");
             }
             if (result.stage == scn::algorithm::DetectionStage::Error) throw std::runtime_error(result.diagnostics.message);
-            performance.recordFrame(result.diagnostics.processingTimeMs);
+            if (result.stage == scn::algorithm::DetectionStage::Accumulating ||
+                result.stage == scn::algorithm::DetectionStage::Completed)
+                performance.recordFrame(result.diagnostics.processingTimeMs);
             ++processed;
             std::cout << "frame=" << fileIndex << " bins=" << frame.powerDb.size()
                       << " accumulation=" << result.accumulatedFrames << '/' << result.requiredFrames

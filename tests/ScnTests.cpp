@@ -1,5 +1,7 @@
 #include "../algorithm/DetectionEngine/DetectionEngine.h"
 #include "../algorithm/preprocess/SpectrumPreprocessor.h"
+#include "../algorithm/preprocess/FfscnPreprocessor.h"
+#include "../algorithm/detector/FfscnDecoder.h"
 #include "../algorithm/refine/CnrRefiner.h"
 #include "../algorithm/fusion/SignalFusion.h"
 #include "../algorithm/detector/ScnSha256.h"
@@ -53,6 +55,25 @@ public:
 private:
     std::shared_ptr<Gate> m_gate;
 };
+class FakeFfscnBackend final : public IFfscnBackend
+{
+public:
+    bool initialize(const FfscnConfig&, std::string& error) override { error.clear(); return true; }
+    bool infer(const std::vector<float>& input, std::size_t width,
+               FfscnModelOutput& output, std::string& error) override
+    {
+        CHECK(input.size() == width * 10);
+        widths.push_back(width);
+        error.clear(); output = {}; output.inputLength = width;
+        output.heatmap.assign(width / 4, 0.0F);
+        output.bandwidth.assign(width / 4, 0.0F);
+        output.offset.assign(width / 4, 0.0F);
+        output.heatmap[100] = 0.95F; output.bandwidth[100] = 20.0F;
+        return true;
+    }
+    std::string modelInfo() const override { return "test-only FFSCN backend"; }
+    std::vector<std::size_t> widths;
+};
 SpectrumFrame frame(std::uint64_t sequence, std::size_t length = 512)
 {
     SpectrumFrame f;
@@ -61,6 +82,12 @@ SpectrumFrame frame(std::uint64_t sequence, std::size_t length = 512)
     f.sourceName = "TEST"; f.powerDb.assign(length, -100);
     if (length >= 440) std::fill(f.powerDb.begin() + 360, f.powerDb.begin() + 440, -50.0F);
     return f;
+}
+SpectrumFrame shortSpectrumFrame(std::uint64_t sequence)
+{
+    auto value = frame(sequence, 10000);
+    std::fill(value.powerDb.begin(), value.powerDb.end(), -100.0F);
+    return value;
 }
 DetectedSignal signal(double first, double last)
 {
@@ -89,6 +116,39 @@ void algorithmTests()
     normalizeWindow({-80}, {0, 1}, 32768, normalized);
     CHECK(std::all_of(normalized.begin(), normalized.end(), [](float p) { return p == 0; }));
 
+    CHECK(ffscnInputLengthFor(1000) == 8192);
+    CHECK(ffscnInputLengthFor(10000) == 8192);
+    CHECK(ffscnInputLengthFor(13000) == 16384);
+    CHECK(ffscnInputLengthFor(12288) == 16384); // nearest-width tie rounds upward
+    auto shortSpectrum = frame(1, 10000);
+    shortSpectrum.powerDb.assign(10000, -100.0F);
+    auto ffWindows = makeFfscnWindows(shortSpectrum);
+    CHECK(ffWindows.size() == 1 && ffWindows[0].inputLength == 8192);
+    CHECK(std::abs(ffWindows[0].binWidthHz * ffWindows[0].inputLength - shortSpectrum.binWidthHz * 10000) < 1e-8);
+    std::vector<SpectrumFrame> tenRows;
+    for (std::uint64_t i = 0; i < 10; ++i) {
+        auto row = shortSpectrum;
+        row.sequence = i + 1; row.timestampNs = static_cast<std::int64_t>(i + 1) * 1000;
+        std::fill(row.powerDb.begin(), row.powerDb.end(), static_cast<float>(i + 1));
+        tenRows.push_back(std::move(row));
+    }
+    prepareFfscnInput(tenRows, ffWindows[0], normalized);
+    CHECK(normalized.size() == 10 * 8192);
+    CHECK(normalized[0] < 0 && normalized[8191] == normalized[0]);
+    CHECK(normalized[9 * 8192] > 0 && std::abs(normalized[9 * 8192] + normalized[0]) < 1e-5F);
+    CHECK(makeFfscnWindows(frame(1, 200000)).back().start + 131072 == 200000);
+
+    FfscnConfig ffConfig;
+    FfscnModelOutput ffOutput;
+    ffOutput.inputLength = 8192;
+    ffOutput.heatmap.assign(2048, 0); ffOutput.bandwidth.assign(2048, 0); ffOutput.offset.assign(2048, 0);
+    ffOutput.heatmap[10] = 0.7F; // Confidence comparison is strict.
+    ffOutput.heatmap[100] = 0.95F; ffOutput.bandwidth[100] = 2.0F; ffOutput.offset[100] = 0.5F;
+    const auto ffCandidates = decodeFfscn(ffOutput, ffConfig);
+    CHECK(ffCandidates.size() == 1 && ffCandidates[0].beginBin == 398 && ffCandidates[0].endBin == 406);
+    const auto nmsCandidates = suppressFfscnCandidates({{0,10,.9F,0},{5,15,.8F,1},{11,20,.7F,2}}, .3F, 10);
+    CHECK(nmsCandidates.size() == 2 && nmsCandidates[0].peakIndex == 0 && nmsCandidates[1].peakIndex == 2);
+
     TemporalAccumulator acc; acc.reset(16);
     for (int i = 1; i <= 17; ++i) { auto item = frame(i, 1); item.powerDb[0] = static_cast<float>(i); acc.push(item); }
     CHECK(acc.count() == 16 && acc.firstSequence() == 2);
@@ -111,6 +171,25 @@ void algorithmTests()
     CHECK(refineCnr(f.powerDb, {0,512}, {{800,900,.9F,200}}, f, SpectrumBranch::Average, 3).empty());
     CHECK(refineCnr({-80}, {0,1}, {{0,1,.9F,0}}, frame(1,1), SpectrumBranch::Average, 3).empty());
     CHECK(refineCnr({-80}, {0,1}, {{0,1,.9F,0}}, frame(1,1), SpectrumBranch::Average, 0).size() == 1);
+
+    auto fakeFfscn = std::make_unique<FakeFfscnBackend>();
+    auto* fakeFfscnPtr = fakeFfscn.get();
+    DetectionEngine ffEngine(std::make_unique<FakeBackend>(), std::move(fakeFfscn));
+    DetectionConfig ffEngineConfig;
+    ffEngineConfig.backend = DetectionBackend::Ffscn;
+    ffEngineConfig.refine.cnrThresholdDb = -1000.0F;
+    CHECK(ffEngine.initialize(ffEngineConfig));
+    DetectionResult ffResult;
+    for (std::uint64_t i = 1; i <= 9; ++i) {
+        ffResult = ffEngine.process(shortSpectrumFrame(i));
+        CHECK(ffResult.stage == DetectionStage::WarmingUp && ffResult.accumulatedFrames == i);
+        CHECK(ffResult.detections.empty() && !ffResult.trackingApplied);
+    }
+    ffResult = ffEngine.process(shortSpectrumFrame(10));
+    CHECK(ffResult.stage == DetectionStage::Completed && ffResult.backend == DetectionBackendId::Ffscn);
+    CHECK(ffResult.firstSequence == 1 && ffResult.windowStartTimestampNs < ffResult.windowEndTimestampNs);
+    CHECK(ffResult.trackingApplied && !ffResult.detections.empty());
+    CHECK(fakeFfscnPtr->widths.size() == 1 && fakeFfscnPtr->widths[0] == 8192);
     auto a = signal(0,100), b = signal(50,150); b.branch = SpectrumBranch::Maximum;
     auto fused = fuseSignals({a,b}, {}); CHECK(fused.size() == 1 && fused[0].endFrequencyHz == 150 && fused[0].branch == SpectrumBranch::Both);
     CHECK(fuseSignals({signal(0,10),signal(11,20)}, {}).size() == 2);
@@ -399,11 +478,12 @@ void frequencyTests()
 }
 }
 
-// Test executable only: resolves the engine factory without linking/loading CUDA.
-// Production executables continue to use the real TensorRtScnBackend.cpp factory.
+// Test executable only: resolves both runtime factories without linking/loading CUDA.
+// Production executables use the TensorRT backend factories from the algorithm library.
 namespace scn::algorithm
 {
 std::unique_ptr<IScnBackend> createTensorRtScnBackend() { return std::make_unique<FakeBackend>(); }
+std::unique_ptr<IFfscnBackend> createTensorRtFfscnBackend() { return std::make_unique<FakeFfscnBackend>(); }
 }
 int main(int argc, char** argv)
 {

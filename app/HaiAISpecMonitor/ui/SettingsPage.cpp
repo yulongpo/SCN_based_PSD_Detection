@@ -4,6 +4,7 @@
 #include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDir>
@@ -242,7 +243,7 @@ void SettingsPage::buildUi()
                                QStringLiteral("告警历史"),
                                QStringLiteral("推送"),
                                QStringLiteral("日志"), QStringLiteral("帮助"),
-                               QStringLiteral("SCN 检测")};
+                               QStringLiteral("信号检测")};
     auto* group = new QButtonGroup(this);
     group->setExclusive(true);
     for (int i = 0; i < names.size(); ++i) {
@@ -349,8 +350,9 @@ QWidget* SettingsPage::buildDetectionPage()
     form->setContentsMargins(22, 22, 22, 22);
     form->setVerticalSpacing(10);
     auto* note = new QLabel(QStringLiteral(
-        "SCN 检测独立累计 16 帧（默认）；界面最大值／平均值仍使用原有 100 帧。\n"
-        "更换模型、GPU 或切换检测开关前，请先停止监测。相对模型路径以程序目录为基准。"), card);
+        "SCN 使用 16 帧平均／最大谱；FFSCN 使用最近 10 帧原始功率谱，17 阶模型输入宽度为 131072。\n"
+        "FFSCN 短谱插值至不小于 8192 点的最近 2^N 宽度（N=13..17），长谱使用 131072 点重叠窗口。\n"
+        "更换后端、模型、GPU 或切换检测开关前，请先停止监测。相对模型路径以程序目录为基准。"), card);
     note->setWordWrap(true);
     form->addRow(note);
     const auto integer = [card, form](const QString& title, int minimum, int maximum) {
@@ -368,8 +370,12 @@ QWidget* SettingsPage::buildDetectionPage()
         form->addRow(title, field);
         return field;
     };
-    m_detectionEnabled = new QCheckBox(QStringLiteral("启用 SCN 检测"), card);
+    m_detectionEnabled = new QCheckBox(QStringLiteral("启用信号检测"), card);
     form->addRow(QStringLiteral("检测开关"), m_detectionEnabled);
+    m_detectionBackend = new QComboBox(card);
+    m_detectionBackend->addItem(QStringLiteral("SCN · TensorRT"), static_cast<int>(algorithm::DetectionBackend::Scn));
+    m_detectionBackend->addItem(QStringLiteral("FFSCN · 17 阶 · TensorRT"), static_cast<int>(algorithm::DetectionBackend::Ffscn));
+    form->addRow(QStringLiteral("检测后端"), m_detectionBackend);
     m_modelPath = new QLineEdit(card);
     auto* browse = actionButton(QStringLiteral("选择模型"), card);
     auto* pathRow = new QHBoxLayout;
@@ -377,18 +383,29 @@ QWidget* SettingsPage::buildDetectionPage()
     pathRow->addWidget(browse);
     form->addRow(QStringLiteral("TensorRT engine 路径"), pathRow);
     connect(browse, &QPushButton::clicked, this, [this] {
-        const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("选择 SCN 模型"),
+        const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("选择 SCN TensorRT engine"),
             m_modelPath->text(), QStringLiteral("TensorRT engine (*.engine);;All files (*)"));
         if (!path.isEmpty()) m_modelPath->setText(path);
     });
+    m_ffscnModelPath = new QLineEdit(card);
+    auto* ffscnBrowse = actionButton(QStringLiteral("选择模型"), card);
+    auto* ffscnPathRow = new QHBoxLayout;
+    ffscnPathRow->addWidget(m_ffscnModelPath, 1);
+    ffscnPathRow->addWidget(ffscnBrowse);
+    form->addRow(QStringLiteral("FFSCN TensorRT engine 路径"), ffscnPathRow);
+    connect(ffscnBrowse, &QPushButton::clicked, this, [this] {
+        const auto path = QFileDialog::getOpenFileName(this, QStringLiteral("选择 FFSCN TensorRT engine"),
+            m_ffscnModelPath->text(), QStringLiteral("TensorRT engine (*.engine);;All files (*)"));
+        if (!path.isEmpty()) m_ffscnModelPath->setText(path);
+    });
     m_gpuIndex = integer(QStringLiteral("GPU 索引"), 0, std::numeric_limits<int>::max());
-    m_accumulatorFrames = integer(QStringLiteral("检测累计帧数"), 1, 256);
-    m_confidence = decimal(QStringLiteral("置信度阈值"), 0.0, 1.0);
+    m_accumulatorFrames = integer(QStringLiteral("SCN 累计帧数"), 1, 256);
+    m_confidence = decimal(QStringLiteral("SCN 置信度阈值"), 0.0, 1.0);
     m_nmsIou = decimal(QStringLiteral("NMS IoU"), 0.0001, 1.0);
     m_topK = integer(QStringLiteral("TopK"), 1, 8192);
     m_maxCandidates = integer(QStringLiteral("每窗口最大候选数"), 1, 8192);
     form->addRow(QStringLiteral("模型输入长度"), new QLabel(QStringLiteral("32768（固定）"), card));
-    m_windowStep = integer(QStringLiteral("窗口步长（频点）"), 1, 32768);
+    m_windowStep = integer(QStringLiteral("SCN 窗口步长（频点）"), 1, 32768);
     m_windowOverlap = new QLabel(card);
     form->addRow(QStringLiteral("窗口重叠率"), m_windowOverlap);
     connect(m_windowStep, &QSpinBox::valueChanged, this, [this](int step) {
@@ -396,13 +413,19 @@ QWidget* SettingsPage::buildDetectionPage()
             .arg(100.0 * (1.0 - static_cast<double>(step) / 32768.0), 0, 'f', 2));
     });
     m_cnr = decimal(QStringLiteral("CNR 门限（dB）"), -1000.0, 1000.0);
-    m_fusionIou = decimal(QStringLiteral("融合 IoU"), 0.0001, 1.0);
-    m_fusionOverlap = decimal(QStringLiteral("融合重叠率"), 0.0001, 1.0);
+    form->addRow(QStringLiteral("FFSCN 输入与时间窗口"),
+        new QLabel(QStringLiteral("17 阶最大 131072 点；固定 10 帧；长谱步长 65536 点"), card));
+    m_ffscnConfidence = decimal(QStringLiteral("FFSCN 置信度阈值"), 0.0, 1.0);
+    m_ffscnNmsIou = decimal(QStringLiteral("FFSCN NMS IoU"), 0.0001, 1.0);
+    m_ffscnTopK = integer(QStringLiteral("FFSCN TopK"), 1, 32768);
+    m_ffscnMaxCandidates = integer(QStringLiteral("FFSCN 每窗口最大候选数"), 1, 32768);
+    m_fusionIou = decimal(QStringLiteral("SCN 融合 IoU"), 0.0001, 1.0);
+    m_fusionOverlap = decimal(QStringLiteral("SCN 融合重叠率"), 0.0001, 1.0);
     m_fusionGap = new FrequencySpinBox(card);
     m_fusionGap->setRange(0.0, 6.4e9);
     m_fusionGap->setDecimals(0);
     m_fusionGap->setMinimumWidth(150);
-    form->addRow(QStringLiteral("融合间隔"), m_fusionGap);
+    form->addRow(QStringLiteral("SCN 融合间隔"), m_fusionGap);
     m_trackOverlap = decimal(QStringLiteral("跟踪重叠率"), 0.0001, 1.0);
     m_maxMiss = decimal(QStringLiteral("最大漏检时间（秒）"), 0.0, 3600.0);
     auto* boundaryGroup = new QGroupBox(QStringLiteral("跟踪与边界稳定"), card);
@@ -449,7 +472,7 @@ QWidget* SettingsPage::buildDetectionPage()
     advancedGroup->setToolTip(QStringLiteral("频点网格容差仍固定为 2 个 bin；以下参数控制突变边界阈值和候选一致性。"));
     form->addRow(advancedGroup);
     m_maxSignals = integer(QStringLiteral("最大信号数"), 1, 65536);
-    auto* apply = actionButton(QStringLiteral("应用 SCN 设置"), card);
+    auto* apply = actionButton(QStringLiteral("应用检测设置"), card);
     form->addRow(QString(), apply);
     m_detectionFeedback = new QLabel(card);
     m_detectionFeedback->setWordWrap(true);
@@ -464,13 +487,20 @@ algorithm::DetectionConfig SettingsPage::detectionConfig() const
 {
     algorithm::DetectionConfig c;
     c.enabled = m_detectionEnabled->isChecked();
+    c.backend = static_cast<algorithm::DetectionBackend>(m_detectionBackend->currentData().toInt());
     c.detector.modelPath = m_modelPath->text().trimmed().toStdString();
+    c.ffscn.modelPath = m_ffscnModelPath->text().trimmed().toStdString();
     c.detector.deviceIndex = m_gpuIndex->value();
+    c.ffscn.deviceIndex = m_gpuIndex->value();
     c.accumulator.frames = static_cast<std::size_t>(m_accumulatorFrames->value());
     c.detector.confidenceThreshold = static_cast<float>(m_confidence->value());
     c.detector.nmsIou = static_cast<float>(m_nmsIou->value());
     c.detector.topK = static_cast<std::size_t>(m_topK->value());
     c.detector.maxCandidatesPerWindow = static_cast<std::size_t>(m_maxCandidates->value());
+    c.ffscn.confidenceThreshold = static_cast<float>(m_ffscnConfidence->value());
+    c.ffscn.nmsIou = static_cast<float>(m_ffscnNmsIou->value());
+    c.ffscn.topK = static_cast<std::size_t>(m_ffscnTopK->value());
+    c.ffscn.maxCandidatesPerWindow = static_cast<std::size_t>(m_ffscnMaxCandidates->value());
     c.detector.inputLength = 32768;
     c.detector.windowStep = static_cast<std::size_t>(m_windowStep->value());
     c.refine.cnrThresholdDb = static_cast<float>(m_cnr->value());
@@ -495,13 +525,19 @@ algorithm::DetectionConfig SettingsPage::detectionConfig() const
 void SettingsPage::setDetectionConfig(const algorithm::DetectionConfig& c)
 {
     m_detectionEnabled->setChecked(c.enabled);
+    m_detectionBackend->setCurrentIndex(m_detectionBackend->findData(static_cast<int>(c.backend)));
     m_modelPath->setText(QString::fromStdString(c.detector.modelPath));
+    m_ffscnModelPath->setText(QString::fromStdString(c.ffscn.modelPath));
     m_gpuIndex->setValue(c.detector.deviceIndex);
     m_accumulatorFrames->setValue(static_cast<int>(c.accumulator.frames));
     m_confidence->setValue(c.detector.confidenceThreshold);
     m_nmsIou->setValue(c.detector.nmsIou);
     m_topK->setValue(static_cast<int>(c.detector.topK));
     m_maxCandidates->setValue(static_cast<int>(c.detector.maxCandidatesPerWindow));
+    m_ffscnConfidence->setValue(c.ffscn.confidenceThreshold);
+    m_ffscnNmsIou->setValue(c.ffscn.nmsIou);
+    m_ffscnTopK->setValue(static_cast<int>(c.ffscn.topK));
+    m_ffscnMaxCandidates->setValue(static_cast<int>(c.ffscn.maxCandidatesPerWindow));
     m_windowStep->setValue(static_cast<int>(c.detector.windowStep));
     m_windowOverlap->setText(QStringLiteral("%1%（由步长计算）")
         .arg(100.0 * (1.0 - static_cast<double>(c.detector.windowStep) / 32768.0), 0, 'f', 2));
@@ -532,8 +568,12 @@ void SettingsPage::loadDetectionConfig()
     c.detector.modelPath = settings.value(QStringLiteral("modelPath"),
         QString::fromStdString(c.detector.modelPath)).toString().toStdString();
     c.detector.deviceIndex = settings.value(QStringLiteral("gpuIndex"), c.detector.deviceIndex).toInt();
+    c.ffscn.deviceIndex = c.detector.deviceIndex;
     c.accumulator.frames = settings.value(QStringLiteral("accumulatorFrames"), 16).toULongLong();
-    c.detector.confidenceThreshold = settings.value(QStringLiteral("confidenceThreshold"), 0.4).toFloat();
+    c.backend = static_cast<algorithm::DetectionBackend>(settings.value(QStringLiteral("backend"), 0).toInt());
+    if (c.backend != algorithm::DetectionBackend::Scn && c.backend != algorithm::DetectionBackend::Ffscn)
+        c.backend = algorithm::DetectionBackend::Scn;
+    c.detector.confidenceThreshold = settings.value(QStringLiteral("confidenceThreshold"), 0.1).toFloat();
     c.detector.nmsIou = settings.value(QStringLiteral("nmsIou"), 0.5).toFloat();
     c.detector.topK = settings.value(QStringLiteral("topK"), 200).toULongLong();
     c.detector.maxCandidatesPerWindow = settings.value(QStringLiteral("maxCandidatesPerWindow"), 150).toULongLong();
@@ -558,10 +598,18 @@ void SettingsPage::loadDetectionConfig()
     c.tracker.jumpCenterToleranceRatio = settings.value(QStringLiteral("trackJumpCenterToleranceRatio"), 0.10).toDouble();
     c.tracker.jumpBandwidthToleranceRatio = settings.value(QStringLiteral("trackJumpBandwidthToleranceRatio"), 1.20).toDouble();
     c.maxSignals = settings.value(QStringLiteral("maxSignals"), 4096).toULongLong();
+    settings.beginGroup(QStringLiteral("ffscn"));
+    c.ffscn.modelPath = settings.value(QStringLiteral("modelPath"),
+        QString::fromStdString(c.ffscn.modelPath)).toString().toStdString();
+    c.ffscn.confidenceThreshold = settings.value(QStringLiteral("confidenceThreshold"), 0.7).toFloat();
+    c.ffscn.nmsIou = settings.value(QStringLiteral("nmsIou"), 0.3).toFloat();
+    c.ffscn.topK = settings.value(QStringLiteral("topK"), 512).toULongLong();
+    c.ffscn.maxCandidatesPerWindow = settings.value(QStringLiteral("maxCandidatesPerWindow"), 512).toULongLong();
+    settings.endGroup();
     std::string error;
     if (!algorithm::validateConfig(c, error)) {
         c = algorithm::DetectionConfig{};
-        setDetectionFeedback(QStringLiteral("已保存的 SCN 配置无效，已载入默认值：%1")
+        setDetectionFeedback(QStringLiteral("已保存的检测配置无效，已载入默认值：%1")
             .arg(QString::fromStdString(error)));
     }
     setDetectionConfig(c);
@@ -572,6 +620,7 @@ void SettingsPage::saveDetectionConfig(const algorithm::DetectionConfig& c) cons
     QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
     settings.beginGroup(QStringLiteral("detection"));
     settings.setValue(QStringLiteral("enabled"), c.enabled);
+    settings.setValue(QStringLiteral("backend"), static_cast<int>(c.backend));
     settings.setValue(QStringLiteral("modelPath"), QString::fromStdString(c.detector.modelPath));
     settings.setValue(QStringLiteral("gpuIndex"), c.detector.deviceIndex);
     settings.setValue(QStringLiteral("accumulatorFrames"), static_cast<qulonglong>(c.accumulator.frames));
@@ -597,6 +646,13 @@ void SettingsPage::saveDetectionConfig(const algorithm::DetectionConfig& c) cons
     settings.setValue(QStringLiteral("trackJumpCenterToleranceRatio"), c.tracker.jumpCenterToleranceRatio);
     settings.setValue(QStringLiteral("trackJumpBandwidthToleranceRatio"), c.tracker.jumpBandwidthToleranceRatio);
     settings.setValue(QStringLiteral("maxSignals"), static_cast<qulonglong>(c.maxSignals));
+    settings.beginGroup(QStringLiteral("ffscn"));
+    settings.setValue(QStringLiteral("modelPath"), QString::fromStdString(c.ffscn.modelPath));
+    settings.setValue(QStringLiteral("confidenceThreshold"), c.ffscn.confidenceThreshold);
+    settings.setValue(QStringLiteral("nmsIou"), c.ffscn.nmsIou);
+    settings.setValue(QStringLiteral("topK"), static_cast<qulonglong>(c.ffscn.topK));
+    settings.setValue(QStringLiteral("maxCandidatesPerWindow"), static_cast<qulonglong>(c.ffscn.maxCandidatesPerWindow));
+    settings.endGroup();
     settings.sync();
 }
 
@@ -851,8 +907,8 @@ QWidget* SettingsPage::buildHelpPage()
         "智能频谱监测仪\n\n"
         "采集监测：选择 BB60C、Harogic 或 FILE 数据源，配置频段后开始监测。\n"
         "录制回放：导入文本/CSV/ASC 或 float32 二进制频谱文件，双击记录可进入信号明细。\n"
-        "系统设置：管理显示、存储、告警规则、推送、日志和 SCN 检测参数。\n\n"
-        "SCN 使用 TensorRT engine，默认独立累计 16 帧；界面最大值／平均值仍为 100 帧。\n"
+        "系统设置：管理显示、存储、告警规则、推送、日志和检测参数。\n\n"
+        "检测后端可选 SCN 或 FFSCN 17 阶。SCN 使用 16 帧平均／最大谱；FFSCN 使用最近 10 帧原始谱和动态频宽 TensorRT engine。\n"
         "更换模型、GPU 或切换检测开关需先停止监测。模型故障时原始频谱仍可查看。\n"
         "信号表展示白名单整理后的业务结果，双击可查看代表检测值、归并原始 ID、白名单和告警状态；信号类型未分类。\n"
         "命中白名单的原始结果会替换为配置频段，不会免除告警；告警历史保存在应用目录 config/policy.sqlite。\n"

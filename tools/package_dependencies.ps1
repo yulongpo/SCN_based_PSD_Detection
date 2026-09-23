@@ -17,7 +17,9 @@ if (Test-Path -LiteralPath $outputPath) {
 
 $paths = @(
     (Join-Path $projectRoot "third_party"),
-    (Join-Path $projectRoot "models\scn_model.engine")
+    (Join-Path $projectRoot "models\scn_model.engine"),
+    (Join-Path $projectRoot "models\ffscn_17.engine"),
+    (Join-Path $projectRoot "models\ffscn_17.manifest.json")
 )
 $files = @(
     Get-ChildItem -LiteralPath $paths -File -Recurse

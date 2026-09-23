@@ -332,6 +332,9 @@ algorithm::ConfigApplyResult MonitoringSession::configureDetection(const algorit
     if (QDir::isRelativePath(QString::fromStdString(config.detector.modelPath)))
         config.detector.modelPath = QDir(QCoreApplication::applicationDirPath())
             .absoluteFilePath(QString::fromStdString(config.detector.modelPath)).toStdString();
+    if (QDir::isRelativePath(QString::fromStdString(config.ffscn.modelPath)))
+        config.ffscn.modelPath = QDir(QCoreApplication::applicationDirPath())
+            .absoluteFilePath(QString::fromStdString(config.ffscn.modelPath)).toStdString();
     const auto result = m_pipeline->configureDetection(config);
     if (result == algorithm::ConfigApplyResult::RequiresRestart && m_pipeline->active)
         emit detectionStatusChanged(QStringLiteral("请先停止监测，再更换模型、GPU 或切换检测开关。"));
@@ -413,14 +416,18 @@ void MonitoringSession::publishLatest()
         snapshot->frame = *frame; // At most one raw-frame copy per publication tick.
         snapshot->detection.generation = epoch;
         snapshot->detection.configVersion = version;
-        snapshot->detection.requiredFrames = m_pipeline->detectionConfig().accumulator.frames;
+        const auto detectionConfig = m_pipeline->detectionConfig();
+        snapshot->detection.backend = detectionConfig.backend == algorithm::DetectionBackend::Ffscn
+            ? algorithm::DetectionBackendId::Ffscn : algorithm::DetectionBackendId::Scn;
+        snapshot->detection.requiredFrames = detectionConfig.backend == algorithm::DetectionBackend::Ffscn
+            ? detectionConfig.ffscn.frameCount : detectionConfig.accumulator.frames;
         if (result && result->generation == epoch && result->configVersion == version &&
             result->startFrequencyHz == frame->startFrequencyHz &&
             result->binWidthHz == frame->binWidthHz && result->pointCount == frame->powerDb.size() &&
             result->referenceLevelDbm == frame->referenceLevelDbm &&
             result->resolutionBandwidthHz == frame->resolutionBandwidthHz && result->sourceName == frame->sourceName)
             snapshot->detection = *result;
-        else snapshot->detection.diagnostics.message = "SCN waiting for a compatible detection result.";
+        else snapshot->detection.diagnostics.message = "Waiting for a compatible detection result.";
         snapshot->running = m_pipeline->active;
         snapshot->droppedFrames = m_pipeline->queue.dropped();
         emit snapshotReady(snapshot);

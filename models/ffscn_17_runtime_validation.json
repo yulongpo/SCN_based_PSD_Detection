@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "checkpointSha256": "7ec171094decd4557abaaf3e295b0fd7397196c67a9249d5593aef00db885da6",
+  "onnxSha256": "113d9d64955695790647c26f0d426aa96216f2fc744423a12f21198720fd5867",
+  "deploymentEngine": {
+    "precision": "FP32",
+    "path": "ffscn_17.engine",
+    "bytes": 20860372,
+    "sha256": "dd88ab057d5af35e412447428de1a0163f79d0d7ac6a5c1a86308b898d50fd81"
+  },
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5060 Laptop GPU",
+    "tensorRt": "10.11.0",
+    "cudaRuntime": "12.9",
+    "applicationConfiguration": "Debug"
+  },
+  "inputs": "Deterministic synthetic 10-frame PSD; tests establish runtime and export parity only, not detection accuracy.",
+  "runs": [
+    {
+      "inputPointCount": 10000,
+      "selectedModelWidth": 8192,
+      "result": "passed",
+      "inferenceMs": 58.106,
+      "outputShapes": {
+        "hm": [
+          1,
+          1,
+          1,
+          2048
+        ],
+        "bw": [
+          1,
+          1,
+          1,
+          2048
+        ],
+        "off": [
+          1,
+          1,
+          1,
+          2048
+        ]
+      },
+      "finiteOutputs": true,
+      "onnxComparison": {
+        "tolerance": "atol=1e-4, rtol=1e-3",
+        "hmMaxAbs": 1.3694167e-05,
+        "bwMaxAbs": 0.014648438,
+        "offMaxAbs": 6.7353249e-06,
+        "allOutputsWithinTolerance": true
+      }
+    },
+    {
+      "inputPointCount": 131072,
+      "selectedModelWidth": 131072,
+      "result": "runtime passed; strict raw-output tolerance exceeded",
+      "inferenceMs": 106.8266,
+      "outputShapes": {
+        "hm": [
+          1,
+          1,
+          1,
+          32768
+        ],
+        "bw": [
+          1,
+          1,
+          1,
+          32768
+        ],
+        "off": [
+          1,
+          1,
+          1,
+          32768
+        ]
+      },
+      "finiteOutputs": true,
+      "onnxComparison": {
+        "tolerance": "atol=1e-4, rtol=1e-3",
+        "hmMaxAbs": 0.0010615587,
+        "hmFailCount": 263,
+        "bwMaxAbs": 0.35351562,
+        "bwFailCount": 1,
+        "offMaxAbs": 0.0002745986,
+        "offFailCount": 0
+      },
+      "decodedCandidateComparison": {
+        "reference": "ONNX Runtime CPU",
+        "tensorRtCandidateCount": 2,
+        "onnxCandidateCount": 2,
+        "matchedPeakIndices": [
+          212,
+          1296
+        ],
+        "confidenceDeltaMax": 0.0,
+        "boundaryDeltaMaxBins": 0.025390625
+      }
+    },
+    {
+      "engine": "FP16 candidate",
+      "inputPointCount": 131072,
+      "result": "not selected",
+      "fp32DecodedCandidateCount": 2,
+      "fp16DecodedCandidateCount": 3,
+      "reason": "decoded candidates did not match on the deterministic synthetic window"
+    }
+  ],
+  "scopeLimitations": [
+    "No CTest suite was executed.",
+    "No UI interaction, instrument capture, labeled dataset SCN/FFSCN comparison, or long-duration performance test was executed.",
+    "At 131072 points the TensorRT/ONNX raw hm and one bw entry exceeded the strict numeric target; decoded synthetic candidates matched closely, but broader model parity remains to be validated."
+  ]
+}

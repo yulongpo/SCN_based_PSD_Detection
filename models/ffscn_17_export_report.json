@@ -1,0 +1,114 @@
+{
+  "checkpoint": "\\\\192.168.1.100\\huanghao\\coding\\FFSCN_train2\\runs\\NFFT17_down13_resume_epoch83\\train_4\\weights\\model_epoch_0155.pth",
+  "checkpointSha256": "7ec171094decd4557abaaf3e295b0fd7397196c67a9249d5593aef00db885da6",
+  "trainingSource": "\\\\192.168.1.100\\huanghao\\coding\\FFSCN_train2",
+  "architecture": {
+    "downNums": 13,
+    "backbone": "MobileNetV3 Large",
+    "neck": "FPN",
+    "neckChannels": 64,
+    "scale": 4
+  },
+  "contract": {
+    "input": "spectrum float32 [1,1,10,N]",
+    "outputs": [
+      "hm",
+      "bw",
+      "off"
+    ],
+    "outputShape": "[1,1,1,N/4]",
+    "opset": 17,
+    "dynamicWidth": [
+      8192,
+      131072
+    ]
+  },
+  "onnxSha256": "113d9d64955695790647c26f0d426aa96216f2fc744423a12f21198720fd5867",
+  "comparisons": [
+    {
+      "inputWidth": 8192,
+      "outputs": [
+        {
+          "name": "hm",
+          "shape": [
+            1,
+            1,
+            1,
+            2048
+          ],
+          "maxAbs": 0.00014269351959228516,
+          "maxRel": 4.033341884613037,
+          "passed": true
+        },
+        {
+          "name": "bw",
+          "shape": [
+            1,
+            1,
+            1,
+            2048
+          ],
+          "maxAbs": 0.00115966796875,
+          "maxRel": 0.00010249012120766565,
+          "passed": true
+        },
+        {
+          "name": "off",
+          "shape": [
+            1,
+            1,
+            1,
+            2048
+          ],
+          "maxAbs": 6.681680679321289e-05,
+          "maxRel": 2.7613773345947266,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "inputWidth": 131072,
+      "outputs": [
+        {
+          "name": "hm",
+          "shape": [
+            1,
+            1,
+            1,
+            32768
+          ],
+          "maxAbs": 0.00018465518951416016,
+          "maxRel": 1.0,
+          "passed": true
+        },
+        {
+          "name": "bw",
+          "shape": [
+            1,
+            1,
+            1,
+            32768
+          ],
+          "maxAbs": 0.18359375,
+          "maxRel": 2.223524461442139e-05,
+          "passed": true
+        },
+        {
+          "name": "off",
+          "shape": [
+            1,
+            1,
+            1,
+            32768
+          ],
+          "maxAbs": 0.00017791986465454102,
+          "maxRel": 4.845675945281982,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "torch": "2.12.0+cu132",
+  "onnx": "1.22.0",
+  "onnxruntime": "1.27.0"
+}

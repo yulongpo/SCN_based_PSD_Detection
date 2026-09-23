@@ -5,6 +5,9 @@ add_library(scn_algorithm STATIC
     accumulation/TemporalAccumulator.cpp
     detector/ScnDecoder.cpp
     detector/TensorRtScnBackend.cpp
+    detector/TensorRtFfscnBackend.cpp
+    detector/FfscnDecoder.cpp
+    preprocess/FfscnPreprocessor.cpp
     refine/CnrRefiner.cpp
     fusion/SignalFusion.cpp
     tracking/SignalTracker.cpp

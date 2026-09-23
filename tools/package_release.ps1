@@ -61,6 +61,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $stagingDirectory 'HaiAISpecMonitor.
 if (-not (Test-Path -LiteralPath (Join-Path $stagingDirectory 'models/scn_model.engine') -PathType Leaf)) {
     throw 'The staged TensorRT model is missing.'
 }
+if (-not (Test-Path -LiteralPath (Join-Path $stagingDirectory 'models/ffscn_17.engine') -PathType Leaf)) {
+    throw 'The staged FFSCN 17th-order TensorRT model is missing.'
+}
+if (-not (Test-Path -LiteralPath (Join-Path $stagingDirectory 'models/ffscn_17.manifest.json') -PathType Leaf)) {
+    throw 'The staged FFSCN model manifest is missing.'
+}
 
 if (Test-Path -LiteralPath $archivePath) { Remove-Item -LiteralPath $archivePath -Force }
 & $sevenZip a -t7z -mx=5 $archivePath (Join-Path $stagingDirectory '*') | Out-Host

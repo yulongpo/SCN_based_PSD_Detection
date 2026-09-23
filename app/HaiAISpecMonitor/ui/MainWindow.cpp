@@ -143,6 +143,12 @@ QString defaultSpectrumFilePath()
         R"(D:\project\isa\bin\data\spectrum_data_org\20260911_152444_651_Fc=2025000000_Bw=3950000000_Rbw=50000_Reflevel=-20.0_SpectrumLen=202242.dat)");
 }
 
+QString detectionBackendName(algorithm::DetectionBackend backend)
+{
+    return backend == algorithm::DetectionBackend::Ffscn
+        ? QStringLiteral("FFSCN 17 阶") : QStringLiteral("SCN");
+}
+
 bool hasDetectionObservations(const algorithm::DetectionResult& result)
 {
     return result.stage == algorithm::DetectionStage::Accumulating ||
@@ -1319,12 +1325,12 @@ bool MainWindow::applyDetectionConfiguration()
     const auto config = m_settingsPage->detectionConfig();
     std::string error;
     if (!algorithm::validateConfig(config, error)) {
-        m_settingsPage->setDetectionFeedback(QStringLiteral("SCN 设置未应用：%1")
+        m_settingsPage->setDetectionFeedback(QStringLiteral("检测设置未应用：%1")
             .arg(QString::fromStdString(error)));
         return false;
     }
     if (m_appliedDetectionConfig && algorithm::sameConfig(*m_appliedDetectionConfig, config)) {
-        m_settingsPage->setDetectionFeedback(QStringLiteral("SCN 设置与当前配置一致。"));
+        m_settingsPage->setDetectionFeedback(QStringLiteral("检测设置与当前配置一致。"));
         return true;
     }
     // Require the visible monitoring lifecycle to be stopped before asking for
@@ -1334,17 +1340,17 @@ bool MainWindow::applyDetectionConfiguration()
         algorithm::classifyConfigChange(*m_appliedDetectionConfig, config) ==
             algorithm::ConfigApplyResult::RequiresRestart) {
         m_settingsPage->setDetectionFeedback(QStringLiteral(
-            "SCN 设置未应用、未保存。请先停止监测，再更换模型、GPU 或切换检测开关。"));
+            "检测设置未应用、未保存。请先停止监测，再更换后端、模型、GPU 或切换检测开关。"));
         return false;
     }
     const auto result = m_session.configureDetection(config);
     if (result == algorithm::ConfigApplyResult::Invalid) {
-        m_settingsPage->setDetectionFeedback(QStringLiteral("SCN 设置未应用：会话拒绝了此配置。"));
+        m_settingsPage->setDetectionFeedback(QStringLiteral("检测设置未应用：会话拒绝了此配置。"));
         return false;
     }
     if (result == algorithm::ConfigApplyResult::RequiresRestart && m_monitoring) {
         m_settingsPage->setDetectionFeedback(QStringLiteral(
-            "SCN 设置未应用、未保存。请先停止监测，再更换模型、GPU 或切换检测开关。"));
+            "检测设置未应用、未保存。请先停止监测，再更换后端、模型、GPU 或切换检测开关。"));
         return false;
     }
     m_appliedDetectionConfig = config;
@@ -1352,11 +1358,11 @@ bool MainWindow::applyDetectionConfiguration()
     m_pendingSnapshot.reset();
     clearDetectionDisplay();
     m_detectionModelStatus = config.enabled
-        ? QStringLiteral("SCN 配置已接收，等待检测状态。") : QStringLiteral("SCN 检测已关闭。");
+        ? QStringLiteral("检测配置已接收，等待检测状态。") : QStringLiteral("信号检测已关闭。");
     updateDetectionStatus(m_displaySnapshot.get());
     m_settingsPage->setDetectionFeedback(result == algorithm::ConfigApplyResult::RequiresReset
-        ? QStringLiteral("SCN 设置已应用并保存，检测累计与跟踪将重置。")
-        : QStringLiteral("SCN 设置已应用并保存。"));
+        ? QStringLiteral("检测设置已应用并保存，输入窗口与跟踪状态将重置。")
+        : QStringLiteral("检测设置已应用并保存。"));
     return true;
 }
 
@@ -1374,8 +1380,11 @@ void MainWindow::clearDetectionDisplay()
         snapshot->detection = {};
         snapshot->detection.generation = generation;
         snapshot->detection.configVersion = version;
-        snapshot->detection.requiredFrames = m_appliedDetectionConfig
-            ? m_appliedDetectionConfig->accumulator.frames : 16;
+        const auto config = m_appliedDetectionConfig.value_or(algorithm::DetectionConfig{});
+        snapshot->detection.backend = config.backend == algorithm::DetectionBackend::Ffscn
+            ? algorithm::DetectionBackendId::Ffscn : algorithm::DetectionBackendId::Scn;
+        snapshot->detection.requiredFrames = config.backend == algorithm::DetectionBackend::Ffscn
+            ? config.ffscn.frameCount : config.accumulator.frames;
         m_displaySnapshot = snapshot;
         m_spectrum->setSnapshot(snapshot);
     }
@@ -1631,7 +1640,8 @@ void MainWindow::updateDetectionStatus(const algorithm::DisplaySnapshot* snapsho
     QString message;
     algorithm::DetectionDiagnostics diagnostics;
     std::size_t accumulated = 0;
-    std::size_t required = config.accumulator.frames;
+    std::size_t required = config.backend == algorithm::DetectionBackend::Ffscn
+        ? config.ffscn.frameCount : config.accumulator.frames;
     QString sequenceAge = QStringLiteral("—");
     std::uint64_t dropped = 0;
     if (snapshot) {
@@ -1647,6 +1657,7 @@ void MainWindow::updateDetectionStatus(const algorithm::DisplaySnapshot* snapsho
         case algorithm::DetectionStage::Completed: state = QStringLiteral("已完成"); break;
         case algorithm::DetectionStage::Error: state = QStringLiteral("检测失败"); break;
         case algorithm::DetectionStage::Cancelled: state = QStringLiteral("已取消"); break;
+        case algorithm::DetectionStage::WarmingUp: state = QStringLiteral("预热中"); break;
         case algorithm::DetectionStage::Bypassed:
             state = config.enabled ? QStringLiteral("等待检测") : QStringLiteral("已关闭");
             break;
@@ -1659,14 +1670,18 @@ void MainWindow::updateDetectionStatus(const algorithm::DisplaySnapshot* snapsho
         state = QStringLiteral("模型不可用");
     }
     m_detectionStatusLabel->setText(QStringLiteral(
-        "SCN：%1 | 累计 %2/%3 | 检测 %4 ms | 延迟 %5 ms | 丢帧 %6")
-        .arg(state).arg(static_cast<qulonglong>(accumulated)).arg(static_cast<qulonglong>(required))
+        "%1：%2 | 帧 %3/%4 | 检测 %5 ms | 延迟 %6 ms | 丢帧 %7")
+        .arg(detectionBackendName(config.backend)).arg(state)
+        .arg(static_cast<qulonglong>(accumulated)).arg(static_cast<qulonglong>(required))
         .arg(diagnostics.processingTimeMs, 0, 'f', 1).arg(diagnostics.resultLatencyMs, 0, 'f', 1)
         .arg(dropped));
     QStringList details{
+        QStringLiteral("当前后端：%1").arg(detectionBackendName(config.backend)),
         QStringLiteral("模型状态：%1").arg(m_detectionModelStatus),
-        QStringLiteral("模型路径：%1").arg(QString::fromStdString(config.detector.modelPath)),
-        QStringLiteral("GPU：%1").arg(config.detector.deviceIndex),
+        QStringLiteral("模型路径：%1").arg(QString::fromStdString(config.backend == algorithm::DetectionBackend::Ffscn
+            ? config.ffscn.modelPath : config.detector.modelPath)),
+        QStringLiteral("GPU：%1").arg(config.backend == algorithm::DetectionBackend::Ffscn
+            ? config.ffscn.deviceIndex : config.detector.deviceIndex),
         QStringLiteral("模型信息：%1").arg(modelInfo.isEmpty() ? QStringLiteral("—") : modelInfo),
         QStringLiteral("排队：%1 | 已完成：%2")
             .arg(static_cast<qulonglong>(diagnostics.queueDepth)).arg(diagnostics.completedCount),
@@ -1684,6 +1699,15 @@ void MainWindow::updateDetectionStatus(const algorithm::DisplaySnapshot* snapsho
             .arg(static_cast<qulonglong>(diagnostics.candidateCount))
             .arg(static_cast<qulonglong>(diagnostics.cnrAcceptedCount))
             .arg(static_cast<qulonglong>(diagnostics.truncatedCount))};
+    if (snapshot && snapshot->detection.backend == algorithm::DetectionBackendId::Ffscn) {
+        const auto& data = snapshot->detection;
+        details << QStringLiteral("FFSCN 窗口：%1 — %2 | 缺失输入帧：%3")
+            .arg(formatDetectionTime(data.windowStartTimestampNs,
+                static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt()) == algorithm::SourceKind::File))
+            .arg(formatDetectionTime(data.windowEndTimestampNs,
+                static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt()) == algorithm::SourceKind::File))
+            .arg(static_cast<qulonglong>(diagnostics.missingFrames));
+    }
     if (snapshot) {
         const auto& data = snapshot->detection;
         details << QStringLiteral("轮次 / 配置版本 / 结果序号：%1 / %2 / %3")
@@ -1717,11 +1741,13 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
     case algorithm::SpectrumBranch::Average: branch = QStringLiteral("平均谱（Average）"); break;
     case algorithm::SpectrumBranch::Maximum: branch = QStringLiteral("最大谱（Maximum）"); break;
     case algorithm::SpectrumBranch::Both: branch = QStringLiteral("双分支融合（Both）"); break;
+    case algorithm::SpectrumBranch::TemporalWindow: branch = QStringLiteral("FFSCN 十帧窗口代表谱行"); break;
     }
     QStringList details{
         QStringLiteral("信号 ID：%1").arg(QString::fromStdString(businessSignal.displayId)),
         QStringLiteral("结果来源：%1").arg(businessSignal.source == policy::PolicySignalSource::Whitelist
-            ? QStringLiteral("白名单替换") : QStringLiteral("SCN 原始检测")),
+            ? QStringLiteral("白名单替换")
+            : detectionBackendName(m_appliedDetectionConfig.value_or(algorithm::DetectionConfig{}).backend) + QStringLiteral(" 原始检测")),
         QStringLiteral("起始频率：%1").arg(formatFrequency(signal.startFrequencyHz)),
         QStringLiteral("终止频率：%1").arg(formatFrequency(signal.endFrequencyHz)),
         QStringLiteral("中心频率：%1").arg(formatFrequency(signal.centerFrequencyHz)),
@@ -1735,6 +1761,9 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
         QStringLiteral("最近出现：%1").arg(formatDetectionTime(signal.lastSeenNs, fileSource)),
         QStringLiteral("firstSeenNs：%1 | lastSeenNs：%2").arg(signal.firstSeenNs).arg(signal.lastSeenNs),
         QStringLiteral("出现次数：%1").arg(signal.occurrenceCount),
+        signal.measurementTimestampNs != 0
+            ? QStringLiteral("电平测量谱行时间：%1").arg(formatDetectionTime(signal.measurementTimestampNs, fileSource))
+            : QStringLiteral("电平测量谱行时间：—"),
         QStringLiteral("信号类型：未分类"),
         fileSource ? QStringLiteral("回放时间由文件帧位置与帧率生成，与实际播放速度无关。")
                    : QStringLiteral("硬件时间相对本轮首个显示帧；负值表示更早的观测，不是日历时间。")};

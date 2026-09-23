@@ -112,7 +112,9 @@ QJsonObject signalJson(const algorithm::DetectedSignal& s)
     return {{"id", static_cast<qint64>(s.id)}, {"startHz", s.startFrequencyHz}, {"endHz", s.endFrequencyHz},
         {"centerHz", s.centerFrequencyHz}, {"bandwidthHz", s.bandwidthHz}, {"confidence", s.confidence},
         {"signalDbm", s.signalLevelDbm}, {"noiseDbm", s.noiseLevelDbm}, {"cnrDb", s.snrDb},
-        {"branch", static_cast<int>(s.branch)}, {"firstSeenNs", QString::number(s.firstSeenNs)},
+        {"branch", static_cast<int>(s.branch)},
+        {"measurementTimestampNs", QString::number(s.measurementTimestampNs)},
+        {"firstSeenNs", QString::number(s.firstSeenNs)},
         {"lastSeenNs", QString::number(s.lastSeenNs)}, {"occurrences", QString::number(s.occurrenceCount)}};
 }
 QJsonArray signalsJson(const std::vector<algorithm::DetectedSignal>& values)
@@ -315,7 +317,8 @@ void writeJsonFile(const QString& path, const QJsonObject& object)
 
 QJsonObject modelProvenance(const algorithm::DetectionConfig& config, const QString& modelInfo)
 {
-    const auto path = QString::fromStdString(config.detector.modelPath);
+    const auto path = QString::fromStdString(config.backend == algorithm::DetectionBackend::Ffscn
+        ? config.ffscn.modelPath : config.detector.modelPath);
     QJsonObject result{{"path", path}, {"loaded", config.enabled}, {"info", modelInfo}};
     // TensorRT reports the SHA-256 of the bytes it actually deserialized. Use
     // that value, rather than hashing a potentially replaced model afterwards.
@@ -359,6 +362,13 @@ algorithm::DetectionConfig readConfiguration(const QString& path)
         if (!root["enabled"].isBool()) throw std::runtime_error("enabled must be boolean.");
         c.enabled = root["enabled"].toBool();
     }
+    if (root.contains("backend")) {
+        if (!root.value("backend").isString()) throw std::runtime_error("backend must be 'scn' or 'ffscn'.");
+        const auto backend = root.value("backend").toString().toLower();
+        if (backend == QStringLiteral("scn")) c.backend = algorithm::DetectionBackend::Scn;
+        else if (backend == QStringLiteral("ffscn")) c.backend = algorithm::DetectionBackend::Ffscn;
+        else throw std::runtime_error("backend must be 'scn' or 'ffscn'.");
+    }
     c.maxSignals = count(root, "maxSignals", c.maxSignals, 65536);
     c.accumulator.frames = count(object(root, "accumulator"), "frames", c.accumulator.frames, 256);
     const auto d = object(root, "detector");
@@ -373,6 +383,16 @@ algorithm::DetectionConfig readConfiguration(const QString& path)
     c.detector.maxCandidatesPerWindow = count(d, "maxCandidatesPerWindow", c.detector.maxCandidatesPerWindow, 8192);
     c.detector.confidenceThreshold = static_cast<float>(number(d, "confidenceThreshold", c.detector.confidenceThreshold));
     c.detector.nmsIou = static_cast<float>(number(d, "nmsIou", c.detector.nmsIou));
+    const auto ffscn = object(root, "ffscn");
+    if (ffscn.contains("modelPath")) {
+        if (!ffscn.value("modelPath").isString()) throw std::runtime_error("ffscn.modelPath must be a string.");
+        c.ffscn.modelPath = ffscn.value("modelPath").toString().toStdString();
+    }
+    c.ffscn.deviceIndex = static_cast<int>(count(ffscn, "deviceIndex", c.ffscn.deviceIndex, 1024));
+    c.ffscn.confidenceThreshold = static_cast<float>(number(ffscn, "confidenceThreshold", c.ffscn.confidenceThreshold));
+    c.ffscn.nmsIou = static_cast<float>(number(ffscn, "nmsIou", c.ffscn.nmsIou));
+    c.ffscn.topK = count(ffscn, "topK", c.ffscn.topK, 32768);
+    c.ffscn.maxCandidatesPerWindow = count(ffscn, "maxCandidatesPerWindow", c.ffscn.maxCandidatesPerWindow, 32768);
     c.refine.cnrThresholdDb = static_cast<float>(number(object(root, "refine"), "cnrThresholdDb", c.refine.cnrThresholdDb));
     const auto f = object(root, "fusion");
     c.fusion.iou = number(f, "iou", c.fusion.iou);
@@ -401,12 +421,20 @@ algorithm::DetectionConfig readConfiguration(const QString& path)
 }
 QJsonObject configurationJson(const algorithm::DetectionConfig& c)
 {
-    return {{"enabled", c.enabled}, {"maxSignals", static_cast<qint64>(c.maxSignals)},
+    return {{"enabled", c.enabled},
+        {"backend", c.backend == algorithm::DetectionBackend::Ffscn ? "ffscn" : "scn"},
+        {"maxSignals", static_cast<qint64>(c.maxSignals)},
         {"accumulator", QJsonObject{{"frames", static_cast<qint64>(c.accumulator.frames)}}},
         {"detector", QJsonObject{{"modelPath", QString::fromStdString(c.detector.modelPath)}, {"deviceIndex", c.detector.deviceIndex},
             {"inputLength", static_cast<qint64>(c.detector.inputLength)}, {"windowStep", static_cast<qint64>(c.detector.windowStep)},
             {"confidenceThreshold", c.detector.confidenceThreshold}, {"nmsIou", c.detector.nmsIou},
             {"topK", static_cast<qint64>(c.detector.topK)}, {"maxCandidatesPerWindow", static_cast<qint64>(c.detector.maxCandidatesPerWindow)}}},
+        {"ffscn", QJsonObject{{"modelPath", QString::fromStdString(c.ffscn.modelPath)},
+            {"deviceIndex", c.ffscn.deviceIndex}, {"inputLength", static_cast<qint64>(c.ffscn.inputLength)},
+            {"frameCount", static_cast<qint64>(c.ffscn.frameCount)},
+            {"confidenceThreshold", c.ffscn.confidenceThreshold}, {"nmsIou", c.ffscn.nmsIou},
+            {"topK", static_cast<qint64>(c.ffscn.topK)},
+            {"maxCandidatesPerWindow", static_cast<qint64>(c.ffscn.maxCandidatesPerWindow)}}},
         {"refine", QJsonObject{{"cnrThresholdDb", c.refine.cnrThresholdDb}}},
         {"fusion", QJsonObject{{"iou", c.fusion.iou}, {"overlapRatio", c.fusion.overlapRatio},
             {"gapHz", static_cast<qint64>(c.fusion.gapHz)}}},
@@ -437,12 +465,18 @@ QJsonObject resultJson(const algorithm::DetectionResult& r, std::size_t index)
     return {{"fileFrameIndex", static_cast<qint64>(index)}, {"sequence", QString::number(r.sequence)},
         {"generation", QString::number(r.generation)}, {"configVersion", QString::number(r.configVersion)},
         {"trackingSegment", QString::number(r.trackingSegment)},
+        {"backend", r.backend == algorithm::DetectionBackendId::Ffscn ? "ffscn" : "scn"},
         {"firstSequence", QString::number(r.firstSequence)}, {"timestampNs", QString::number(r.timestampNs)},
         {"firstTimestampNs", QString::number(r.firstTimestampNs)}, {"startHz", r.startFrequencyHz}, {"binHz", r.binWidthHz},
         {"pointCount", static_cast<qint64>(r.pointCount)}, {"referenceLevelDbm", r.referenceLevelDbm},
         {"resolutionBandwidthHz", r.resolutionBandwidthHz}, {"sourceName", QString::fromStdString(r.sourceName)},
         {"accumulatedFrames", static_cast<qint64>(r.accumulatedFrames)},
         {"requiredFrames", static_cast<qint64>(r.requiredFrames)}, {"stage", static_cast<int>(r.stage)},
+        {"warmupFrames", static_cast<qint64>(r.warmupFrames)},
+        {"windowStartTimestampNs", QString::number(r.windowStartTimestampNs)},
+        {"windowEndTimestampNs", QString::number(r.windowEndTimestampNs)},
+        {"windowSemantics", r.backend == algorithm::DetectionBackendId::Ffscn
+            ? "present at least once within the most recent ten processed frames" : "SCN accumulated spectrum result"},
         {"detections", signalsJson(r.detections)}, {"trackedDetections", tracked},
         {"trackingApplied", r.trackingApplied}, {"diagnostics", QJsonObject{
             {"totalMs", d.processingTimeMs}, {"throughputHz", d.throughputHz},
@@ -450,7 +484,9 @@ QJsonObject resultJson(const algorithm::DetectionResult& r, std::size_t index)
             {"accumulationMs", d.accumulationTimeMs}, {"inferenceMs", d.inferenceTimeMs},
             {"postprocessMs", d.postprocessTimeMs}, {"windows", static_cast<qint64>(d.windowCount)},
             {"candidates", static_cast<qint64>(d.candidateCount)}, {"cnrAccepted", static_cast<qint64>(d.cnrAcceptedCount)},
-            {"truncated", static_cast<qint64>(d.truncatedCount)}, {"message", QString::fromStdString(d.message)}}}};
+            {"truncated", static_cast<qint64>(d.truncatedCount)},
+            {"missingFrames", static_cast<qint64>(d.missingFrames)},
+            {"message", QString::fromStdString(d.message)}}}};
 }
 QJsonObject compareResults(const QJsonObject& reference, const QJsonObject& actual, double binHz)
 {
@@ -538,6 +574,30 @@ void StageExporter::window(std::uint64_t, algorithm::SpectrumBranch branch, std:
         {"confidence", c.confidence}, {"peakIndex", static_cast<qint64>(c.peakIndex)}});
     writeJson(prefix + ".json", {{"windowStartBin", static_cast<qint64>(start)}, {"validLength", static_cast<qint64>(valid)},
         {"branch", static_cast<int>(branch)}, {"candidates", bands}, {"cnrAccepted", signalsJson(refined)}});
+}
+void StageExporter::ffscnWindow(std::uint64_t, std::size_t start, std::size_t width,
+    const std::vector<algorithm::SpectrumFrame>& frames, const std::vector<float>& input,
+    const algorithm::FfscnModelOutput& output,
+    const std::vector<algorithm::FfscnCandidate>& candidates,
+    const std::vector<algorithm::DetectedSignal>& refined)
+{
+    const auto prefix = m_prefix + QStringLiteral("_ffscn_window_%1").arg(start);
+    writeFloats(prefix + "_input.f32", input);
+    writeFloats(prefix + "_hm.f32", output.heatmap);
+    writeFloats(prefix + "_bw.f32", output.bandwidth);
+    writeFloats(prefix + "_off.f32", output.offset);
+    QJsonArray bands, rows;
+    for (const auto& candidate : candidates) bands.append(QJsonObject{
+        {"beginBin", candidate.beginBin}, {"endBin", candidate.endBin},
+        {"confidence", candidate.confidence}, {"peakIndex", static_cast<qint64>(candidate.peakIndex)}});
+    for (const auto& frame : frames) rows.append(QJsonObject{
+        {"sequence", QString::number(frame.sequence)}, {"timestampNs", QString::number(frame.timestampNs)},
+        {"startHz", frame.startFrequencyHz}, {"binHz", frame.binWidthHz},
+        {"pointCount", static_cast<qint64>(frame.powerDb.size())}});
+    writeJson(prefix + ".json", {{"backend", "ffscn"}, {"windowStartBin", static_cast<qint64>(start)},
+        {"inputWidth", static_cast<qint64>(width)}, {"outputWidth", static_cast<qint64>(output.heatmap.size())},
+        {"inputLayout", "[1,1,10,N] row-major; normalized"}, {"frames", rows},
+        {"candidates", bands}, {"cnrAccepted", signalsJson(refined)}});
 }
 void StageExporter::fused(const algorithm::DetectionResult& r)
 {

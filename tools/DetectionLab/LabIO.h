@@ -33,6 +33,11 @@ public:
                 const std::vector<float>&, const algorithm::ScnModelOutput&,
                 const std::vector<algorithm::ScnCandidate>&,
                 const std::vector<algorithm::DetectedSignal>&) override;
+    void ffscnWindow(std::uint64_t, std::size_t, std::size_t,
+                     const std::vector<algorithm::SpectrumFrame>&,
+                     const std::vector<float>&, const algorithm::FfscnModelOutput&,
+                     const std::vector<algorithm::FfscnCandidate>&,
+                     const std::vector<algorithm::DetectedSignal>&) override;
     void fused(const algorithm::DetectionResult&) override;
 private:
     QString m_directory, m_prefix;

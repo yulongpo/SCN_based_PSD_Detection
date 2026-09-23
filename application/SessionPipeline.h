@@ -27,7 +27,8 @@ class SessionPipeline
 {
 public:
     using StatusSink = std::function<void(std::uint64_t, std::uint64_t, const std::string&)>;
-    explicit SessionPipeline(StatusSink status, std::unique_ptr<algorithm::IScnBackend> backend = {});
+    explicit SessionPipeline(StatusSink status, std::unique_ptr<algorithm::IScnBackend> backend = {},
+                             std::unique_ptr<algorithm::IFfscnBackend> ffscnBackend = {});
     ~SessionPipeline();
     // expectedEpoch prevents a file-loop boundary from superseding a newer UI command.
     // Returns zero if that source operation has already been invalidated.
@@ -67,6 +68,7 @@ private:
     std::uint64_t m_completedSequence = 0;
     StatusSink m_status;
     std::unique_ptr<algorithm::IScnBackend> m_backend;
+    std::unique_ptr<algorithm::IFfscnBackend> m_ffscnBackend;
     policy::AlarmHistoryStore m_history;
     std::thread m_thread;
 };

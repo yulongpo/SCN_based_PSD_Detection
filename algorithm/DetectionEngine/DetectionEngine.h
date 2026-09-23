@@ -6,6 +6,8 @@
 #include "../accumulation/TemporalAccumulator.h"
 #include "../tracking/SignalTracker.h"
 #include "../diagnostics/DetectionObserver.h"
+#include "../detector/IFfscnBackend.h"
+#include <deque>
 #include <functional>
 
 namespace scn::algorithm
@@ -14,7 +16,8 @@ namespace scn::algorithm
 class DetectionEngine
 {
 public:
-    explicit DetectionEngine(std::unique_ptr<IScnBackend> backend = {});
+    explicit DetectionEngine(std::unique_ptr<IScnBackend> backend = {},
+                             std::unique_ptr<IFfscnBackend> ffscnBackend = {});
 
     bool initialize(const DetectionConfig& config);
     DetectionResult process(const SpectrumFrame& frame,
@@ -24,14 +27,20 @@ public:
     void setObserver(DetectionObserver* observer) noexcept { m_observer = observer; }
     const std::string& lastError() const noexcept { return m_lastError; }
     bool initialized() const noexcept { return m_initialized; }
-    std::string modelInfo() const { return m_backend ? m_backend->modelInfo() : std::string(); }
+    std::string modelInfo() const;
 
     [[nodiscard]] const DetectionConfig& config() const noexcept { return m_config; }
 
 private:
+    DetectionResult processFfscn(const SpectrumFrame& frame,
+                                 const std::function<bool()>& cancelled);
     DetectionConfig m_config{};
     bool m_initialized = false;
     std::unique_ptr<IScnBackend> m_backend;
+    std::unique_ptr<IFfscnBackend> m_ffscnBackend;
+    std::deque<SpectrumFrame> m_ffscnFrames;
+    std::vector<float> m_ffscnNormalized;
+    FfscnModelOutput m_ffscnOutput;
     TemporalAccumulator m_accumulator;
     SignalTracker m_tracker;
     DetectionObserver* m_observer = nullptr;

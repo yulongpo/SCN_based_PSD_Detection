@@ -20,6 +20,8 @@
         "SCN_ENABLE_TENSORRT": "ON",
         "SCN_TENSORRT_ROOT": "${sourceDir}/third_party/tensorrt",
         "SCN_MODEL_SOURCE": "${sourceDir}/models/scn_model.engine",
+        "SCN_FFSCN_MODEL_SOURCE": "${sourceDir}/models/ffscn_17.engine",
+        "SCN_FFSCN_MANIFEST_SOURCE": "${sourceDir}/models/ffscn_17.manifest.json",
         "CUDAToolkit_ROOT": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4",
         "SCN_BUILD_TESTS": "ON",
         "SCN_BUILD_DETECTION_LAB": "ON"
@@ -39,6 +41,8 @@
         "SCN_ENABLE_TENSORRT": "ON",
         "SCN_TENSORRT_ROOT": "${sourceDir}/third_party/tensorrt",
         "SCN_MODEL_SOURCE": "${sourceDir}/models/scn_model.engine",
+        "SCN_FFSCN_MODEL_SOURCE": "${sourceDir}/models/ffscn_17.engine",
+        "SCN_FFSCN_MANIFEST_SOURCE": "${sourceDir}/models/ffscn_17.manifest.json",
         "CUDAToolkit_ROOT": "C:/Program Files/NVIDIA GPU Computing Toolkit/CUDA/v12.4",
         "SCN_BUILD_TESTS": "ON",
         "SCN_BUILD_DETECTION_LAB": "ON"

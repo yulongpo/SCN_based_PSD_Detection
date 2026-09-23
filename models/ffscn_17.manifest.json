@@ -1,0 +1,60 @@
+{
+  "model": "FFSCN 17th-order",
+  "checkpointSha256": "7ec171094decd4557abaaf3e295b0fd7397196c67a9249d5593aef00db885da6",
+  "onnxSha256": "113d9d64955695790647c26f0d426aa96216f2fc744423a12f21198720fd5867",
+  "architecture": {
+    "downNums": 13,
+    "backbone": "MobileNetV3 Large",
+    "neck": "FPN",
+    "neckChannels": 64
+  },
+  "io": {
+    "inputName": "spectrum",
+    "inputShape": "[1,1,10,N]",
+    "inputType": "float32",
+    "outputNames": [
+      "hm",
+      "bw",
+      "off"
+    ],
+    "outputShape": "[1,1,1,N/4]",
+    "outputType": "float32"
+  },
+  "profile": {
+    "min": "[1,1,10,8192]",
+    "opt": "[1,1,10,131072]",
+    "max": "[1,1,10,131072]",
+    "allowedWidths": [
+      8192,
+      16384,
+      32768,
+      65536,
+      131072
+    ]
+  },
+  "tensorRt": "10.11.0",
+  "cudaSdk": "12.9",
+  "gpu": "RTX 5060 Laptop",
+  "note": "FP32 is the deployment engine. FP16 candidate did not match the fixed synthetic test decoded candidates (3 vs 2), so it is not selected.",
+  "deployment": {
+    "precision": "FP32",
+    "path": "ffscn_17.engine",
+    "bytes": 20860372,
+    "sha256": "dd88ab057d5af35e412447428de1a0163f79d0d7ac6a5c1a86308b898d50fd81"
+  },
+  "buildCandidates": [
+    {
+      "precision": "FP32",
+      "path": "ffscn_17_fp32.engine",
+      "bytes": 20860372,
+      "sha256": "dd88ab057d5af35e412447428de1a0163f79d0d7ac6a5c1a86308b898d50fd81"
+    },
+    {
+      "precision": "FP16",
+      "path": "ffscn_17_fp16_candidate.engine",
+      "bytes": 13970980,
+      "sha256": "f74a4283bc51cc7c80cbcbb54c576316dc9858082a9e056ac175baed3cf4022c"
+    }
+  ],
+  "artifactScope": "The deployment package contains deployment.path and this manifest; buildCandidates are conversion outputs."
+}

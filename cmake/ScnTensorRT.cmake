@@ -14,6 +14,12 @@ set(SCN_TENSORRT_ROOT
 set(SCN_MODEL_SOURCE
     "${PROJECT_SOURCE_DIR}/models/scn_model.engine"
     CACHE FILEPATH "Serialized SCN engine copied to models/scn_model.engine")
+set(SCN_FFSCN_MODEL_SOURCE
+    "${PROJECT_SOURCE_DIR}/models/ffscn_17.engine"
+    CACHE FILEPATH "Serialized FFSCN 17th-order TensorRT engine")
+set(SCN_FFSCN_MANIFEST_SOURCE
+    "${PROJECT_SOURCE_DIR}/models/ffscn_17.manifest.json"
+    CACHE FILEPATH "FFSCN TensorRT engine build manifest")
 
 if(SCN_ENABLE_TENSORRT)
     if(NOT CMAKE_SIZEOF_VOID_P EQUAL 8)
@@ -143,13 +149,29 @@ function(scn_deploy_detection_runtime target)
     if(NOT EXISTS "${_scn_model}" OR IS_DIRECTORY "${_scn_model}")
         message(FATAL_ERROR "SCN engine missing: ${_scn_model}; set SCN_MODEL_SOURCE")
     endif()
+    get_filename_component(_scn_ffscn_model "${SCN_FFSCN_MODEL_SOURCE}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
+    if(NOT EXISTS "${_scn_ffscn_model}" OR IS_DIRECTORY "${_scn_ffscn_model}")
+        message(FATAL_ERROR "FFSCN engine missing: ${_scn_ffscn_model}; build it with tools/build_ffscn_engine.ps1")
+    endif()
+    get_filename_component(_scn_ffscn_manifest "${SCN_FFSCN_MANIFEST_SOURCE}" ABSOLUTE BASE_DIR "${PROJECT_SOURCE_DIR}")
+    if(NOT EXISTS "${_scn_ffscn_manifest}" OR IS_DIRECTORY "${_scn_ffscn_manifest}")
+        message(FATAL_ERROR "FFSCN engine manifest missing: ${_scn_ffscn_manifest}")
+    endif()
     add_custom_command(TARGET "${target}" POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${target}>/models"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
             "${_scn_model}" "$<TARGET_FILE_DIR:${target}>/models/scn_model.engine"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${_scn_ffscn_model}" "$<TARGET_FILE_DIR:${target}>/models/ffscn_17.engine"
+        COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+            "${_scn_ffscn_manifest}" "$<TARGET_FILE_DIR:${target}>/models/ffscn_17.manifest.json"
         COMMENT "Deploying SCN TensorRT engine for ${target}"
         VERBATIM)
     install(FILES "${_scn_model}" DESTINATION bin/models RENAME scn_model.engine
+        COMPONENT SCNDetectionRuntime)
+    install(FILES "${_scn_ffscn_model}" DESTINATION bin/models RENAME ffscn_17.engine
+        COMPONENT SCNDetectionRuntime)
+    install(FILES "${_scn_ffscn_manifest}" DESTINATION bin/models RENAME ffscn_17.manifest.json
         COMPONENT SCNDetectionRuntime)
     if(WIN32)
         get_property(_scn_runtime_dlls GLOBAL PROPERTY SCN_DETECTION_RUNTIME_DLLS)

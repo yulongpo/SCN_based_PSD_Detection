@@ -14,10 +14,13 @@ enum class DetectionStage
     Accumulating,
     Completed,
     Error,
-    Cancelled
+    Cancelled,
+    WarmingUp
 };
 
-enum class SpectrumBranch : std::uint8_t { Average = 1, Maximum = 2, Both = 3 };
+enum class DetectionBackendId : std::uint8_t { Scn = 0, Ffscn = 1 };
+
+enum class SpectrumBranch : std::uint8_t { Average = 1, Maximum = 2, Both = 3, TemporalWindow = 4 };
 
 enum class BoundaryState : std::uint8_t
 {
@@ -38,6 +41,7 @@ struct DetectedSignal
     float snrDb = 0.0F;
     float signalLevelDbm = 0.0F;
     float noiseLevelDbm = 0.0F;
+    std::int64_t measurementTimestampNs = 0;
     SpectrumBranch branch = SpectrumBranch::Average;
     std::int64_t firstSeenNs = 0;
     std::int64_t lastSeenNs = 0;
@@ -55,6 +59,7 @@ struct DetectionDiagnostics
     std::size_t cnrAcceptedCount = 0;
     std::size_t truncatedCount = 0;
     std::size_t queueDepth = 0;
+    std::uint64_t missingFrames = 0;
     std::uint64_t completedCount = 0;
     double processingP50Ms = 0.0;
     double processingP95Ms = 0.0;
@@ -73,11 +78,15 @@ struct DetectionResult
     std::uint64_t generation = 0;
     std::uint64_t configVersion = 0;
     std::uint64_t trackingSegment = 0;
+    DetectionBackendId backend = DetectionBackendId::Scn;
     std::uint64_t firstSequence = 0;
     std::int64_t firstTimestampNs = 0;
     std::int64_t timestampNs = 0;
     std::size_t accumulatedFrames = 0;
     std::size_t requiredFrames = 16;
+    std::size_t warmupFrames = 0;
+    std::int64_t windowStartTimestampNs = 0;
+    std::int64_t windowEndTimestampNs = 0;
     double startFrequencyHz = 0.0;
     double binWidthHz = 0.0;
     std::size_t pointCount = 0;

@@ -20,5 +20,6 @@ $lab = '.\out\build\vs2026-qt611-debug\tools\DetectionLab\Debug\DetectionLab.exe
 JSONL/CSV 及阶段目录均配有 manifest。输出拒绝覆盖已有文件；重复执行须更换输出名。
 阶段导出写入指定目录下独立的 `run-UUID` 子目录，避免混入旧数据。
 
-完整参数、默认数据、文件格式和用户验收步骤见 [SCN 检测开发说明](../../docs/scn_detection.md)。
+SCN 参数、数据格式和用户验收见 [SCN 检测开发说明](../../docs/scn_detection.md)；
+FFSCN 后端参数、10 帧输入和 TensorRT 模型契约见 [FFSCN 后端方案](../../docs/ffscn_backend_plan.md)。
 实现阶段不运行此工具或推理，模型兼容性和检测结果由用户实际验证。

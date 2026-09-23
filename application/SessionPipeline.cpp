@@ -6,8 +6,10 @@
 
 namespace scn::application
 {
-SessionPipeline::SessionPipeline(StatusSink status, std::unique_ptr<algorithm::IScnBackend> backend)
+SessionPipeline::SessionPipeline(StatusSink status, std::unique_ptr<algorithm::IScnBackend> backend,
+                                 std::unique_ptr<algorithm::IFfscnBackend> ffscnBackend)
     : m_status(std::move(status)), m_backend(std::move(backend)),
+      m_ffscnBackend(std::move(ffscnBackend)),
       m_history(policy::PolicyRepository::historyPath()),
       m_thread([this] { detectLoop(); })
 {
@@ -93,6 +95,10 @@ algorithm::ConfigApplyResult SessionPipeline::configureDetection(const algorithm
             (change == algorithm::ConfigApplyResult::RequiresRestart && active)) return change;
         m_config = config; ++configVersion;
         latestResult.reset(); ++revision;
+        if (change == algorithm::ConfigApplyResult::RequiresRestart) {
+            latestPolicy.reset();
+            ++policyRevision;
+        }
     }
     queue.wake();
     return change;
@@ -107,7 +113,7 @@ bool SessionPipeline::submit(std::shared_ptr<const algorithm::SpectrumFrame> fra
 }
 void SessionPipeline::detectLoop()
 {
-    algorithm::DetectionEngine engine(std::move(m_backend));
+    algorithm::DetectionEngine engine(std::move(m_backend), std::move(m_ffscnBackend));
     runtime::PerformanceMonitor performance;
     std::uint64_t appliedEpoch = 0, appliedVersion = 0, appliedControl = 0, appliedPolicyVersion = 0;
     bool initialized = false;
@@ -177,25 +183,35 @@ void SessionPipeline::detectLoop()
             }
         }
         if (version && (version != appliedVersion || epoch != appliedEpoch)) {
+            const auto configChange = version != appliedVersion
+                ? algorithm::classifyConfigChange(engine.config(), config)
+                : algorithm::ConfigApplyResult::Applied;
             // A file loop resets history only, even after a model failure. Retry
             // model initialization on an explicit session/configuration change.
             if (!appliedVersion || (!initialized && (version != appliedVersion || control != appliedControl)) || (version != appliedVersion &&
-                algorithm::classifyConfigChange(engine.config(), config) == algorithm::ConfigApplyResult::RequiresRestart)) {
+                configChange == algorithm::ConfigApplyResult::RequiresRestart)) {
                 busy = true;
-                m_status(control, version, "SCN: loading TensorRT engine...");
+                const auto backendName = config.backend == algorithm::DetectionBackend::Ffscn ? "FFSCN17" : "SCN";
+                m_status(control, version, std::string(backendName) + ": loading TensorRT engine...");
                 initialized = engine.initialize(config);
                 busy = false;
-                m_status(control, version, initialized ? (config.enabled ? "SCN ready: " + engine.modelInfo() : "SCN disabled")
-                                            : "SCN unavailable: " + engine.lastError());
+                m_status(control, version, initialized ? (config.enabled ? std::string(backendName) + " ready: " + engine.modelInfo() : std::string(backendName) + " disabled")
+                                            : std::string(backendName) + " unavailable: " + engine.lastError());
             } else if (version != appliedVersion) {
                 engine.updateConfig(config);
             }
+            const bool resetPolicyState = epoch != appliedEpoch ||
+                (version != appliedVersion && configChange == algorithm::ConfigApplyResult::RequiresRestart);
             if (epoch != appliedEpoch) {
                 engine.reset(epoch); performance.reset();
+            }
+            if (resetPolicyState) {
                 std::vector<policy::AlarmEventChange> changes;
-                policyEngine.reset(epoch, ++policySegment, "监测轮次变化", &changes);
+                policyEngine.reset(epoch, ++policySegment,
+                    epoch != appliedEpoch ? "监测轮次变化" : "检测后端或模型变化", &changes);
                 m_history.enqueue(changes);
                 std::lock_guard<std::mutex> lock(mutex);
+                latestPolicy.reset();
                 pendingAlarmChanges.insert(pendingAlarmChanges.end(), changes.begin(), changes.end());
                 ++policyRevision;
             }

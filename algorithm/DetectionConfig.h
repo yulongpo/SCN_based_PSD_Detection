@@ -8,16 +8,31 @@ namespace scn::algorithm
 {
 
 struct AccumulatorConfig { std::size_t frames = 16; };
+enum class DetectionBackend : std::uint8_t { Scn = 0, Ffscn = 1 };
 struct DetectorConfig
 {
     std::string modelPath = "models/scn_model.engine";
     int deviceIndex = 0;
     std::size_t inputLength = 32768;
     std::size_t windowStep = 16384;
-    float confidenceThreshold = 0.4F;
+    float confidenceThreshold = 0.1F;
     float nmsIou = 0.5F;
     std::size_t topK = 200;
     std::size_t maxCandidatesPerWindow = 150;
+};
+struct FfscnConfig
+{
+    std::string modelPath = "models/ffscn_17.engine";
+    int deviceIndex = 0;
+    // The model remains a 17th-order detector. Its engine accepts dynamic
+    // widths from 2^13 through 2^17; shorter spectra are interpolated upward.
+    std::size_t inputLength = 131072;
+    std::size_t frameCount = 10;
+    std::size_t windowStep = 65536;
+    float confidenceThreshold = 0.7F;
+    float nmsIou = 0.3F;
+    std::size_t topK = 512;
+    std::size_t maxCandidatesPerWindow = 512;
 };
 struct RefineConfig { float cnrThresholdDb = 3.0F; };
 struct FusionConfig
@@ -43,9 +58,11 @@ struct TrackerConfig
 struct DetectionConfig
 {
     bool enabled = true;
+    DetectionBackend backend = DetectionBackend::Scn;
     std::size_t maxSignals = 4096;
     AccumulatorConfig accumulator;
     DetectorConfig detector;
+    FfscnConfig ffscn;
     RefineConfig refine;
     FusionConfig fusion;
     TrackerConfig tracker;
