@@ -4,7 +4,9 @@
 #include <QAbstractItemView>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
 #include <QFile>
@@ -19,6 +21,7 @@
 #include <QScrollArea>
 #include <QSettings>
 #include <QSpinBox>
+#include <QStandardPaths>
 #include <QStackedWidget>
 #include <QStyledItemDelegate>
 #include <QTableWidget>
@@ -60,6 +63,19 @@ QWidget* formContainer(QWidget* parent)
     auto* widget = new QWidget(parent);
     widget->setObjectName(QStringLiteral("settingsCard"));
     return widget;
+}
+
+QString defaultRecordingDirectory()
+{
+    return QDir(QCoreApplication::applicationDirPath())
+        .filePath(QStringLiteral("data_record"));
+}
+
+QString legacyRecordingDirectory()
+{
+    QString base = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    if (base.isEmpty()) base = QDir::homePath();
+    return QDir(base).filePath(QStringLiteral("HaiAISpecMonitor/recordings"));
 }
 
 class FrequencyItemDelegate final : public QStyledItemDelegate
@@ -117,6 +133,32 @@ SettingsPage::SettingsPage(QWidget* parent)
 int SettingsPage::displayRefreshRateHz() const
 {
     return m_displayRate ? m_displayRate->value() : 30;
+}
+
+application::RecordingConfig SettingsPage::recordingConfig() const
+{
+    application::RecordingConfig config;
+    config.enabled = m_recordingEnabled && m_recordingEnabled->isChecked();
+    const QString directory = m_recordingDirectory
+        ? m_recordingDirectory->text().trimmed() : QString();
+    config.directory = (directory.isEmpty() ? defaultRecordingDirectory() : directory).toStdString();
+    return config;
+}
+
+void SettingsPage::saveRecordingConfig() const
+{
+    const auto config = recordingConfig();
+    QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+    settings.setValue(QStringLiteral("recording/enabled"), config.enabled);
+    settings.setValue(QStringLiteral("recording/directory"),
+                      QString::fromStdString(config.directory));
+    settings.setValue(QStringLiteral("recording/directoryVersion"), 2);
+    settings.sync();
+}
+
+void SettingsPage::setRecordingStatus(const QString& status)
+{
+    if (m_recordingStatus) m_recordingStatus->setText(status);
 }
 
 void SettingsPage::buildUi()
@@ -424,11 +466,51 @@ QWidget* SettingsPage::buildStoragePage()
     retention->setValue(30);
     retention->setSuffix(QStringLiteral(" 天"));
     form->addRow(QStringLiteral("保留周期"), retention);
+
+    auto* recordingTitle = new QLabel(QStringLiteral("实时源录制"), card);
+    recordingTitle->setObjectName(QStringLiteral("settingsSectionTitle"));
+    form->addRow(recordingTitle);
+    m_recordingEnabled = new QCheckBox(QStringLiteral("监测开始时录制 BB60C / 海得罗捷频谱"), card);
+    form->addRow(QStringLiteral("录制开关"), m_recordingEnabled);
+    m_recordingDirectory = new QLineEdit(card);
+    auto* recordingBrowse = actionButton(QStringLiteral("选择目录"), card);
+    auto* recordingPathRow = new QHBoxLayout;
+    recordingPathRow->addWidget(m_recordingDirectory, 1);
+    recordingPathRow->addWidget(recordingBrowse);
+    form->addRow(QStringLiteral("录制目录"), recordingPathRow);
+    auto* recordingFormat = new QLabel(QStringLiteral(
+        "固定保存为连续 little-endian float32 PSD 帧（.dat），文件名包含 "
+        "Fc、Bw、Rbw、Reflevel 和 SpectrumLen，可由 FILE 源直接回放。"), card);
+    recordingFormat->setWordWrap(true);
+    recordingFormat->setObjectName(QStringLiteral("pageHint"));
+    form->addRow(QString(), recordingFormat);
+    m_recordingStatus = new QLabel(QStringLiteral("未开始录制"), card);
+    m_recordingStatus->setObjectName(QStringLiteral("pageHint"));
+    form->addRow(QStringLiteral("录制状态"), m_recordingStatus);
+
+    const QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+    m_recordingEnabled->setChecked(
+        settings.value(QStringLiteral("recording/enabled"), false).toBool());
+    QString recordingDirectory = settings.value(
+        QStringLiteral("recording/directory")).toString().trimmed();
+    if (recordingDirectory.isEmpty() ||
+        QDir::cleanPath(recordingDirectory) == QDir::cleanPath(legacyRecordingDirectory())) {
+        recordingDirectory = defaultRecordingDirectory();
+    }
+    m_recordingDirectory->setText(recordingDirectory);
+    m_recordingDirectory->setToolTip(QStringLiteral(
+        "默认目录为程序路径下的 data_record，可按需修改。"));
+
     auto* apply = actionButton(QStringLiteral("应用存储策略"), card);
     form->addRow(QString(), apply);
     connect(browse, &QPushButton::clicked, this, [this] {
         const QString path = QFileDialog::getExistingDirectory(this, QStringLiteral("选择频谱存储目录"));
         if (!path.isEmpty()) m_storagePath->setText(path);
+    });
+    connect(recordingBrowse, &QPushButton::clicked, this, [this] {
+        const QString path = QFileDialog::getExistingDirectory(
+            this, QStringLiteral("选择实时频谱录制目录"), m_recordingDirectory->text());
+        if (!path.isEmpty()) m_recordingDirectory->setText(path);
     });
     connect(apply, &QPushButton::clicked, this, &SettingsPage::applyStorage);
     layout->addWidget(card, 0, Qt::AlignTop);
@@ -809,7 +891,11 @@ void SettingsPage::exportPolicy()
 
 void SettingsPage::applyStorage()
 {
+    saveRecordingConfig();
     appendLog(QStringLiteral("存储策略已应用：%1").arg(m_storagePath->text()));
+    appendLog(QStringLiteral("实时频谱录制已%1：%2")
+        .arg(recordingConfig().enabled ? QStringLiteral("启用") : QStringLiteral("关闭"),
+             QString::fromStdString(recordingConfig().directory)));
 }
 
 void SettingsPage::appendLog(const QString& message)

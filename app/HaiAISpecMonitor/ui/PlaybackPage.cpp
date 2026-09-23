@@ -9,12 +9,17 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTextStream>
 #include <QVBoxLayout>
+
+#include <algorithm>
 
 namespace scn::app
 {
@@ -169,6 +174,9 @@ void PlaybackPage::buildDetailPage()
     heading->addSpacing(12);
     heading->addWidget(m_detailTitle);
     heading->addStretch();
+    m_exportSignalsButton = toolButton(QStringLiteral("导出信号列表"), m_detailPage,
+                                       QStringLiteral(":/recordplayback/export.png"));
+    heading->addWidget(m_exportSignalsButton);
     root->addLayout(heading);
 
     m_detailSummary = new QLabel(m_detailPage);
@@ -187,6 +195,8 @@ void PlaybackPage::buildDetailPage()
     m_signalTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     root->addWidget(m_signalTable, 1);
     connect(backButton, &QPushButton::clicked, this, &PlaybackPage::backToList);
+    connect(m_exportSignalsButton, &QPushButton::clicked,
+            this, &PlaybackPage::exportCurrentSignals);
 }
 
 void PlaybackPage::rememberFile(const QString& path, const QString& sourceName,
@@ -203,18 +213,21 @@ void PlaybackPage::rememberFile(const QString& path, const QString& sourceName,
              record.rbwHz != resolutionBandwidthHz ||
              record.signalCount != signalCount ||
              record.alarmCount != alarmCount);
-        if (changed) {
+        const qint64 currentSize = QFileInfo(path).exists() ? QFileInfo(path).size() : 0;
+        if (changed || (currentSize > 0 && currentSize != record.sizeBytes)) {
             record.startFrequencyHz = startFrequencyHz;
             record.endFrequencyHz = endFrequencyHz;
             record.rbwHz = resolutionBandwidthHz;
             record.signalCount = signalCount;
             record.alarmCount = alarmCount;
+            record.sizeBytes = currentSize;
+            if (currentSize > 0) record.end = QDateTime::currentDateTime();
             refreshTable();
         }
         return;
     }
     QFileInfo info(path);
-    Record record;
+    PlaybackRecord record;
     record.path = path;
     record.fileName = info.fileName();
     record.source = sourceName;
@@ -230,7 +243,20 @@ void PlaybackPage::rememberFile(const QString& path, const QString& sourceName,
     emit logMessage(QStringLiteral("已加入回放记录：%1").arg(record.fileName));
 }
 
-void PlaybackPage::appendRecord(const Record& record)
+void PlaybackPage::updateResultSignals(const QString& path, const QVector<PlaybackSignalRow>& rows)
+{
+    if (path.isEmpty()) return;
+    for (auto& record : m_records) {
+        if (record.path != path) continue;
+        record.signalRows = rows;
+        record.signalCount = rows.size();
+        refreshTable();
+        if (m_detailRecordPath == path) populateDetails(record);
+        return;
+    }
+}
+
+void PlaybackPage::appendRecord(const PlaybackRecord& record)
 {
     m_records.push_back(record);
     refreshTable();
@@ -374,6 +400,7 @@ void PlaybackPage::showDetails()
     for (const auto& record : m_records) {
         if (record.path == path) {
             populateDetails(record);
+            m_detailRecordPath = record.path;
             m_pages->setCurrentWidget(m_detailPage);
             break;
         }
@@ -391,6 +418,7 @@ void PlaybackPage::openCurrentRow()
 
 void PlaybackPage::backToList()
 {
+    m_detailRecordPath.clear();
     m_pages->setCurrentWidget(m_listPage);
 }
 
@@ -399,18 +427,76 @@ void PlaybackPage::filterRows(const QString&)
     refreshTable();
 }
 
-void PlaybackPage::populateDetails(const Record& record)
+void PlaybackPage::populateDetails(const PlaybackRecord& record)
 {
+    m_detailRecordPath = record.path;
+    const int resultCount = record.signalRows.size();
     m_detailTitle->setText(QStringLiteral("信号明细 - %1").arg(record.fileName));
     m_detailSummary->setText(QStringLiteral(
         "设备：%1    频段：%2 - %3 MHz    RBW：%4 kHz    文件：%5\n"
-        "说明：当前重构版本保留原 ISA 的明细工作流，检测算法接口尚未填充实际识别结果。")
+        "结果信号数：%6。可导出当前回放结果为 CSV 或 JSON。")
         .arg(record.source)
         .arg(record.startFrequencyHz / 1e6, 0, 'f', 3)
         .arg(record.endFrequencyHz / 1e6, 0, 'f', 3)
         .arg(record.rbwHz / 1e3, 0, 'f', 3)
-        .arg(record.path));
-    m_signalTable->setRowCount(0);
+        .arg(record.path)
+        .arg(resultCount));
+    m_signalTable->setRowCount(resultCount);
+    for (int row = 0; row < resultCount; ++row) {
+        const auto& signal = record.signalRows.at(row);
+        m_signalTable->setItem(row, 0, item(signal.id));
+        m_signalTable->setItem(row, 1, item(signal.centerFrequencyMHz));
+        m_signalTable->setItem(row, 2, item(signal.bandwidthKHz));
+        m_signalTable->setItem(row, 3, item(signal.type));
+        m_signalTable->setItem(row, 4, item(signal.alarm));
+        m_signalTable->setItem(row, 5, item(signal.lastSeen));
+        m_signalTable->setItem(row, 6, item(signal.occurrenceCount));
+        m_signalTable->item(row, 0)->setToolTip(signal.details);
+    }
+}
+
+void PlaybackPage::exportCurrentSignals()
+{
+    const auto it = std::find_if(m_records.cbegin(), m_records.cend(),
+        [this](const PlaybackRecord& record) { return record.path == m_detailRecordPath; });
+    if (it == m_records.cend()) return;
+    if (it->signalRows.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("暂无信号结果"),
+                                 QStringLiteral("当前回放尚未产生可导出的检测结果。"));
+        return;
+    }
+    const QString path = QFileDialog::getSaveFileName(
+        this, QStringLiteral("导出回放信号列表"),
+        QStringLiteral("%1_signals.csv").arg(it->fileName),
+        QStringLiteral("CSV files (*.csv);;JSON files (*.json)"));
+    if (path.isEmpty()) return;
+    QFile output(path);
+    if (!output.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QMessageBox::warning(this, QStringLiteral("导出失败"), QStringLiteral("无法写入目标文件。"));
+        return;
+    }
+    if (path.endsWith(QStringLiteral(".json"), Qt::CaseInsensitive)) {
+        QJsonArray array;
+        for (const auto& signal : it->signalRows) {
+            array.append(QJsonObject{{QStringLiteral("id"), signal.id},
+                {QStringLiteral("centerFrequencyMHz"), signal.centerFrequencyMHz},
+                {QStringLiteral("bandwidthKHz"), signal.bandwidthKHz},
+                {QStringLiteral("type"), signal.type}, {QStringLiteral("alarm"), signal.alarm},
+                {QStringLiteral("lastSeen"), signal.lastSeen},
+                {QStringLiteral("occurrenceCount"), signal.occurrenceCount},
+                {QStringLiteral("details"), signal.details}});
+        }
+        output.write(QJsonDocument(array).toJson(QJsonDocument::Indented));
+    } else {
+        QTextStream stream(&output);
+        stream << "id,center_frequency_mhz,bandwidth_khz,type,alarm,last_seen,occurrence_count\n";
+        for (const auto& signal : it->signalRows) {
+            stream << signal.id << ',' << signal.centerFrequencyMHz << ',' << signal.bandwidthKHz
+                   << ',' << signal.type << ',' << signal.alarm << ',' << signal.lastSeen << ','
+                   << signal.occurrenceCount << '\n';
+        }
+    }
+    emit logMessage(QStringLiteral("已导出回放信号列表：%1").arg(path));
 }
 
 } // namespace scn::app

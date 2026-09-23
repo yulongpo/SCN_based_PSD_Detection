@@ -11,6 +11,7 @@
 
 #include "../../../application/MonitoringSession.h"
 #include "../../../application/PresentationModel.h"
+#include "../../../application/RecordingConfig.h"
 #include "../../../application/policy/PolicyTypes.h"
 
 #include <QMainWindow>
@@ -73,6 +74,10 @@ private slots:
     void onPolicySnapshot(const scn::application::policy::PolicySnapshotPtr& snapshot);
     void onAlarmEvents(const std::vector<scn::application::policy::AlarmEventChange>& changes);
     void onPolicyStatus(const QString& message);
+    void onRecordingStatus(const QString& path, double startFrequencyHz,
+                           double endFrequencyHz, double resolutionBandwidthHz,
+                           std::uint64_t frameCount, bool active);
+    void onRecordingError(const QString& message);
     void showAlarmHistory();
 
 protected:
@@ -102,10 +107,12 @@ private:
     void saveUiState() const;
     bool applyCurrentConfiguration();
     bool applyDetectionConfiguration();
+    application::RecordingConfig recordingConfig() const;
     void clearDetectionDisplay();
     void clearMonitoringDisplay(bool discardCurrentGeneration = true);
     void updateDetectionStatus(const algorithm::DisplaySnapshot* snapshot);
     void updateSignalTable(const algorithm::DisplaySnapshot& snapshot);
+    void updatePlaybackResultSignals(const algorithm::DisplaySnapshot& snapshot);
     const policy::SignalAnnotation* annotationFor(policy::PolicySignalSource source,
                                                   std::int64_t signalId) const;
     QString formatDetectionTime(std::int64_t timestampNs, bool fileSource) const;

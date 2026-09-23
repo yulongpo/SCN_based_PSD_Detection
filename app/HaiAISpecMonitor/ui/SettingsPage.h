@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../../algorithm/DetectionConfig.h"
+#include "../../../application/RecordingConfig.h"
 #include "../../../application/policy/PolicyTypes.h"
 
 #include <QLineEdit>
@@ -32,6 +33,9 @@ class SettingsPage final : public QWidget
 public:
     explicit SettingsPage(QWidget* parent = nullptr);
     int displayRefreshRateHz() const;
+    application::RecordingConfig recordingConfig() const;
+    void saveRecordingConfig() const;
+    void setRecordingStatus(const QString& status);
     algorithm::DetectionConfig detectionConfig() const;
     void acceptDetectionConfig(const algorithm::DetectionConfig& config);
     void setDetectionFeedback(const QString& message);
@@ -81,6 +85,9 @@ private:
     QPlainTextEdit* m_logEdit = nullptr;
     QSpinBox* m_displayRate = nullptr;
     QLineEdit* m_storagePath = nullptr;
+    QCheckBox* m_recordingEnabled = nullptr;
+    QLineEdit* m_recordingDirectory = nullptr;
+    QLabel* m_recordingStatus = nullptr;
     QTableWidget* m_ruleTable = nullptr;
     QTableWidget* m_whitelistTable = nullptr;
     QCheckBox* m_detectionEnabled = nullptr;

@@ -3,6 +3,7 @@
 #include "../algorithm/types/DisplayTypes.h"
 #include "../source/SourceConfig.h"
 #include "../algorithm/DetectionConfig.h"
+#include "RecordingConfig.h"
 #include "policy/PolicyTypes.h"
 
 #include <QThread>
@@ -31,6 +32,7 @@ public:
     ~MonitoringSession() override;
 
     void configure(const source::SourceConfig& config);
+    void configureRecording(const RecordingConfig& config);
     void start();
     void pause();
     void resume();
@@ -53,6 +55,13 @@ signals:
     void deviceStatusChanged(const QString& device,
                              const QString& status,
                              bool connected);
+    void recordingStatusChanged(const QString& path,
+                                double startFrequencyHz,
+                                double endFrequencyHz,
+                                double resolutionBandwidthHz,
+                                std::uint64_t frameCount,
+                                bool active);
+    void recordingError(const QString& message);
 
 private:
     QThread m_workerThread;

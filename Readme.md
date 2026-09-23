@@ -60,6 +60,22 @@ RBW、参考电平和每帧点数。选择文件后，文件路径、起始频�
 
 同时保留 `.bin` float32 文件以及空白、逗号、分号、制表符分隔的文本文件。
 
+### 实时源录制与回放
+
+BB60C 和海得罗捷实时源可以在“系统设置 → 存储”页的“实时源录制”区域启用录制。
+录制在首个有效实时频谱帧到达后开始，保存目录默认为程序目录下的
+`data_record`，也可以在设置页中选择其他目录。文件格式与
+当前 FILE 源默认文件一致：连续 little-endian `float32` PSD 帧，扩展名为 `.dat`。
+文件名自动写入 `Fc`、`Bw`、`Rbw`、`Reflevel` 和 `SpectrumLen`，因此录制完成后
+可以直接在“录制回放”页打开，或切换到 FILE 源选择该文件回放。录制过程遇到频率
+网格变化会停止当前文件并显示错误，避免生成无法连续读取的文件。
+
+录制文件加入回放列表后，打开“详情”可以查看当前回放得到的业务信号结果，并使用
+“导出信号列表”导出 CSV 或 JSON。导出内容包含业务 ID、中心频率、带宽、信号类型、
+告警等级、最近出现时间和出现次数；白名单替换结果的归并来源等详情可在表格提示中查看。
+录制开关和保存目录保存在 `QSettings` 的 `recording/enabled` 与
+`recording/directory`，不会自动启动采集。
+
 文件检测队列满时暂停读入，不丢检测帧；文件循环在末尾检测完成后重置算法。
 DAT 不包含逐帧采集时间，跟踪使用“文件帧索引 / 配置帧率”的逻辑回放时间，
 不以推理耗时推算信号时间。实时设备队列满时丢弃最旧待检测帧，统计丢帧数。
@@ -245,6 +261,27 @@ BB60C、Harogic HTRA、TensorRT 的完整导入库和运行库，以及默认
 
 依赖目录和模型由现有 `.gitignore` 排除；源码仓库提交头文件和构建配置，Release
 资产提供大体积 DLL、LIB 及 engine 文件。
+
+## Release 安装包
+
+使用 VS 2026 和 Qt 6.11.1 构建发布版并生成 Windows x64 自解压安装包：
+
+```powershell
+.\tools\package_release.ps1
+```
+
+安装包输出到 `out/packages/HaiAISpecMonitor-0.1.0-win-x64-Setup.exe`。安装包内含
+Qt 发布运行库、BB60C 和 Harogic 运行库、TensorRT/CUDA 运行库以及默认 SCN 模型；
+不包含 Qt/CUDA 开发环境，也不包含本机的 `config/` 配置和告警历史。运行安装包后，
+默认安装到 `%ProgramFiles%\SCN\HaiAISpecMonitor` 并启动程序。
+
+仅重新打包已有 Release 构建产物时使用：
+
+```powershell
+.\tools\package_release.ps1 -SkipBuild
+```
+
+该脚本依赖目标机器已安装 7-Zip（默认路径为 `C:\Program Files\7-Zip`）。
 
 DetectionLab 快速入口：
 

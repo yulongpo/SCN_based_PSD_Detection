@@ -1,0 +1,3 @@
+#include <windows.h>
+
+IDI_HAI_AI_SPEC_MONITOR ICON DISCARDABLE "legacy/res/img/title/app.ico"

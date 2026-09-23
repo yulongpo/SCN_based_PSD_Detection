@@ -194,6 +194,10 @@ MainWindow::MainWindow(application::MonitoringSession& session,
             this, [this](const QString& device, const QString& status, bool connected) {
                 m_statusStrip->setDeviceConnectionStatus(device, status, connected);
             });
+    connect(&m_session, &application::MonitoringSession::recordingStatusChanged,
+            this, &MainWindow::onRecordingStatus);
+    connect(&m_session, &application::MonitoringSession::recordingError,
+            this, &MainWindow::onRecordingError);
     connect(&m_viewModel, &viewmodel::MonitorViewModel::snapshotChanged,
             this, &MainWindow::onSnapshot);
     connect(&m_viewModel, &viewmodel::MonitorViewModel::stateChanged,
@@ -277,6 +281,7 @@ void MainWindow::applyTheme()
         QLabel#controlLabel { color: rgba(255,255,255,200); font-size: 13px; }
         QLabel#stateLabel { color: #0a8cfe; font-size: 13px; }
         QLabel#frameLabel, QLabel#pageHint { color: #606d79; font-size: 12px; }
+        QLabel#settingsSectionTitle { color: #dcecff; font-size: 15px; font-weight: 600; padding-top: 8px; }
         QLabel#pageTitle { color: #e9f2fc; font-size: 22px; font-weight: 700; }
         QLabel#detailSummary { background: #15151e; border: 1px solid #1e1e28; border-radius: 8px; color: #c8c8c8; padding: 12px; }
         QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox { background: #15151e; border: 1px solid #1e1e28; border-radius: 6px; color: #d6dee8; padding: 3px 8px; min-height: 26px; }
@@ -584,7 +589,7 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     // Middle block: lifecycle operations remain visually separate from the
     // parameter grid and the alarm statistics.
     auto* operationPanel = new QWidget(panel);
-    operationPanel->setMinimumWidth(260);
+    operationPanel->setMinimumWidth(300);
     operationPanel->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     auto* operationLayout = new QVBoxLayout(operationPanel);
     operationLayout->setContentsMargins(0, 0, 0, 0);
@@ -600,15 +605,16 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_startButton = new QPushButton(QStringLiteral("开始监测"), panel);
     m_startButton->setObjectName(QStringLiteral("primaryButton"));
     m_startButton->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    m_startButton->setFixedSize(120, 40);
-    operation->addWidget(m_startButton);
+    m_startButton->setMinimumHeight(44);
+    m_startButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    operation->addWidget(m_startButton, 1);
     m_pauseButton = new QPushButton(QStringLiteral("暂停查看"), panel);
     m_pauseButton->setObjectName(QStringLiteral("dangerButton"));
     m_pauseButton->setIcon(style()->standardIcon(QStyle::SP_MediaPause));
-    m_pauseButton->setFixedSize(120, 40);
+    m_pauseButton->setMinimumHeight(44);
+    m_pauseButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     m_pauseButton->setEnabled(false);
-    operation->addWidget(m_pauseButton);
-    operation->addStretch(1);
+    operation->addWidget(m_pauseButton, 1);
     operationLayout->addLayout(operation);
     operationLayout->addStretch(1);
     layout->addWidget(operationPanel, 0);
@@ -760,6 +766,17 @@ source::SourceConfig MainWindow::currentConfig() const
     config.pointCount = static_cast<std::size_t>(m_pointCount->value());
     config.frameRateHz = m_frameRate->value();
     config.loopFile = m_loopFile->isChecked();
+    return config;
+}
+
+application::RecordingConfig MainWindow::recordingConfig() const
+{
+    auto config = m_settingsPage ? m_settingsPage->recordingConfig()
+                                  : application::RecordingConfig{};
+    if (m_sourceCombo && m_sourceCombo->currentData().toInt() ==
+        static_cast<int>(algorithm::SourceKind::File)) {
+        config.enabled = false;
+    }
     return config;
 }
 
@@ -1025,7 +1042,6 @@ void MainWindow::loadUiState()
                                          m_frameRate->value()).toInt());
     m_loopFile->setChecked(settings.value(QStringLiteral("source/loopFile"),
                                           m_loopFile->isChecked()).toBool());
-
     m_spectrum->setMaxSpectrumVisible(
         settings.value(QStringLiteral("spectrum/showMaxSpectrum"), false).toBool());
     m_spectrum->setRealtimeSpectrumVisible(
@@ -1082,6 +1098,7 @@ void MainWindow::saveUiState() const
     settings.setValue(QStringLiteral("source/pointCount"), m_pointCount->value());
     settings.setValue(QStringLiteral("source/frameRate"), m_frameRate->value());
     settings.setValue(QStringLiteral("source/loopFile"), m_loopFile->isChecked());
+    if (m_settingsPage) m_settingsPage->saveRecordingConfig();
     settings.setValue(QStringLiteral("spectrum/showMaxSpectrum"),
                       m_spectrum->maxSpectrumVisible());
     settings.setValue(QStringLiteral("spectrum/showRealtimeSpectrum"),
@@ -1113,6 +1130,7 @@ bool MainWindow::applyCurrentConfiguration()
     // published snapshots from the preceding run without waiting for Running.
     m_minimumGeneration = m_latestGeneration + 1;
     m_pendingSnapshot.reset();
+    m_session.configureRecording(recordingConfig());
     m_controller.configure(config);
     updateDisplayDomain();
     m_spectrum->resetView();
@@ -1263,6 +1281,37 @@ void MainWindow::showAbout()
                        "界面保留原 ISA 的采集监测、录制回放和系统设置工作流。"));
 }
 
+void MainWindow::onRecordingStatus(const QString& path, double startFrequencyHz,
+                                   double endFrequencyHz, double resolutionBandwidthHz,
+                                   std::uint64_t frameCount, bool active)
+{
+    const QString status = active
+        ? QStringLiteral("录制中：%1（%2帧）")
+            .arg(QFileInfo(path).fileName())
+            .arg(static_cast<qulonglong>(frameCount))
+        : QStringLiteral("已保存：%1（%2帧）")
+            .arg(QFileInfo(path).fileName())
+            .arg(static_cast<qulonglong>(frameCount));
+    if (m_settingsPage) m_settingsPage->setRecordingStatus(status);
+    statusBar()->showMessage(status, active ? 2500 : 6000);
+    if (!path.isEmpty()) {
+        const auto sourceName = m_sourceCombo ? m_sourceCombo->currentText()
+                                               : QStringLiteral("LIVE");
+        m_playbackPage->rememberFile(path, sourceName, startFrequencyHz, endFrequencyHz,
+                                     resolutionBandwidthHz, 0, 0);
+    }
+    if (!active && !path.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("实时频谱录制完成：%1（%2帧）")
+            .arg(path).arg(static_cast<qulonglong>(frameCount)), 6000);
+    }
+}
+
+void MainWindow::onRecordingError(const QString& message)
+{
+    if (m_settingsPage) m_settingsPage->setRecordingStatus(QStringLiteral("录制失败：%1").arg(message));
+    statusBar()->showMessage(QStringLiteral("录制失败：%1").arg(message), 8000);
+}
+
 void MainWindow::toggleMaximize()
 {
     if (isMaximized()) {
@@ -1369,12 +1418,14 @@ void MainWindow::refreshDisplay()
                 m_playbackPage->rememberFile(m_filePath->text(), m_sourceCombo->currentText(),
                     current.frame.startFrequencyHz, endFrequencyHz, m_resolutionBandwidth->value(),
                     hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0, 0);
+                updatePlaybackResultSignals(current);
             }
         }
     }
     if (policyChanged) {
         updateMonitorMetrics(snapshotRef);
         updateSignalTable(snapshotRef);
+        if (fileSource) updatePlaybackResultSignals(snapshotRef);
     }
 }
 
@@ -1582,6 +1633,40 @@ void MainWindow::updateSignalTable(const algorithm::DisplaySnapshot& snapshot)
         m_signalTable->setItem(row, 5, lastSeen);
         m_signalTable->setItem(row, 6, tableItem(QString::number(signal.occurrenceCount)));
     }
+}
+
+void MainWindow::updatePlaybackResultSignals(const algorithm::DisplaySnapshot& snapshot)
+{
+    if (!m_playbackPage || !m_filePath || m_filePath->text().trimmed().isEmpty()) return;
+    if (!m_policySnapshot ||
+        m_policySnapshot->generation != snapshot.detection.generation ||
+        m_policySnapshot->detectionConfigVersion != snapshot.detection.configVersion ||
+        m_policySnapshot->sequence > snapshot.frame.sequence) return;
+
+    QVector<PlaybackSignalRow> rows;
+    rows.reserve(static_cast<int>(m_policySnapshot->businessSignals.size()));
+    for (const auto& businessSignal : m_policySnapshot->businessSignals) {
+        const auto& signal = businessSignal.measurement;
+        QString alarm = QStringLiteral("无");
+        if (const auto* annotation = annotationFor(businessSignal.source, businessSignal.id)) {
+            if (annotation->level == policy::AlarmLevel::Critical) alarm = QStringLiteral("严重");
+            else if (annotation->level == policy::AlarmLevel::General) alarm = QStringLiteral("一般");
+            if (annotation->state == policy::AlarmState::Pending) alarm += QStringLiteral("（待确认）");
+            else if (annotation->state == policy::AlarmState::PendingClear) alarm += QStringLiteral("（待解除）");
+            if (!annotation->whitelistNames.empty()) alarm += QStringLiteral(" | 白名单");
+        }
+        PlaybackSignalRow row;
+        row.id = QString::fromStdString(businessSignal.displayId);
+        row.centerFrequencyMHz = QString::number(signal.centerFrequencyHz / 1e6, 'f', 3);
+        row.bandwidthKHz = QString::number(signal.bandwidthHz / 1e3, 'f', 3);
+        row.type = QStringLiteral("未分类");
+        row.alarm = alarm;
+        row.lastSeen = formatDetectionTime(signal.lastSeenNs, true);
+        row.occurrenceCount = QString::number(signal.occurrenceCount);
+        row.details = signalDetails(businessSignal, true);
+        rows.push_back(std::move(row));
+    }
+    m_playbackPage->updateResultSignals(m_filePath->text().trimmed(), rows);
 }
 
 void MainWindow::applyPolicyConfiguration()

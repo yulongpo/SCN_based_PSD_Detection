@@ -23,9 +23,16 @@ file(GLOB VIEWMODEL_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/viewmodel/*.cpp"
 )
 
+if(WIN32)
+    set(SCN_WINDOWS_RESOURCES
+        "${CMAKE_CURRENT_SOURCE_DIR}/HaiAISpecMonitor.rc"
+    )
+endif()
+
 add_executable(HaiAISpecMonitor
     main.cpp
     ui/ui_resources.qrc
+    ${SCN_WINDOWS_RESOURCES}
     ${APP_HEADERS}
     ${APP_SOURCES}
     ${CONTROLLER_HEADERS}

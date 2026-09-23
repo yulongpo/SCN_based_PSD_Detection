@@ -1,5 +1,6 @@
 add_library(scn_source STATIC
     SourceFactory.cpp
+    SpectrumRecorder.cpp
     detail/SyntheticSpectrumSource.cpp
     BB60CSource/BB60CSource.cpp
     HarogicSource/HarogicSource.cpp

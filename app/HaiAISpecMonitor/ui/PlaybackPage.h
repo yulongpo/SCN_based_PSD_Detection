@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDateTime>
+#include <QVector>
 #include <QWidget>
 
 class QLabel;
@@ -11,6 +12,34 @@ class QTableWidget;
 
 namespace scn::app
 {
+
+struct PlaybackSignalRow
+{
+    QString id;
+    QString centerFrequencyMHz;
+    QString bandwidthKHz;
+    QString type;
+    QString alarm;
+    QString lastSeen;
+    QString occurrenceCount;
+    QString details;
+};
+
+struct PlaybackRecord
+{
+    QString path;
+    QString fileName;
+    QString source;
+    double startFrequencyHz = 0.0;
+    double endFrequencyHz = 0.0;
+    double rbwHz = 0.0;
+    QDateTime begin;
+    QDateTime end;
+    qint64 sizeBytes = 0;
+    int signalCount = 0;
+    int alarmCount = 0;
+    QVector<PlaybackSignalRow> signalRows;
+};
 
 /**
  * @brief 原 ISA 的录制回放页面的 Qt6 兼容实现。
@@ -28,6 +57,7 @@ public:
                       double startFrequencyHz, double endFrequencyHz,
                       double resolutionBandwidthHz, int signalCount = 0,
                       int alarmCount = 0);
+    void updateResultSignals(const QString& path, const QVector<PlaybackSignalRow>& rows);
 
 signals:
     void replayRequested(const QString& path);
@@ -36,6 +66,7 @@ signals:
 private slots:
     void importFile();
     void exportList();
+    void exportCurrentSignals();
     void deleteSelected();
     void showDetails();
     void backToList();
@@ -43,29 +74,14 @@ private slots:
     void openCurrentRow();
 
 private:
-    struct Record
-    {
-        QString path;
-        QString fileName;
-        QString source;
-        double startFrequencyHz = 0.0;
-        double endFrequencyHz = 0.0;
-        double rbwHz = 0.0;
-        QDateTime begin;
-        QDateTime end;
-        qint64 sizeBytes = 0;
-        int signalCount = 0;
-        int alarmCount = 0;
-    };
-
     void buildUi();
     void buildListPage();
     void buildDetailPage();
-    void appendRecord(const Record& record);
+    void appendRecord(const PlaybackRecord& record);
     void refreshTable();
     int selectedRow() const;
     QString formatDuration(const QDateTime& begin, const QDateTime& end) const;
-    void populateDetails(const Record& record);
+    void populateDetails(const PlaybackRecord& record);
 
     QStackedWidget* m_pages = nullptr;
     QWidget* m_listPage = nullptr;
@@ -76,7 +92,9 @@ private:
     QTableWidget* m_signalTable = nullptr;
     QLabel* m_detailTitle = nullptr;
     QLabel* m_detailSummary = nullptr;
-    QVector<Record> m_records;
+    QPushButton* m_exportSignalsButton = nullptr;
+    QVector<PlaybackRecord> m_records;
+    QString m_detailRecordPath;
 };
 
 } // namespace scn::app
