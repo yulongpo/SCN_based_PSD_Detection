@@ -115,7 +115,8 @@ bool BB60CSource::open(const SourceConfig& config, std::string& error)
         return false;
     }
 
-    status = bbConfigureCenterSpan(m_device, config.centerFrequencyHz, config.bandwidthHz);
+    status = bbConfigureCenterSpan(m_device, static_cast<double>(config.centerFrequencyHz),
+                                   static_cast<double>(config.bandwidthHz));
     if (status != bbNoError) return fail("bbConfigureCenterSpan", status);
     status = bbConfigureRefLevel(m_device, config.referenceLevelDbm);
     if (status != bbNoError) return fail("bbConfigureRefLevel", status);
@@ -124,8 +125,8 @@ bool BB60CSource::open(const SourceConfig& config, std::string& error)
 
     // Equal RBW/VBW avoids an additional VBW filtering delay in the live path.
     status = bbConfigureSweepCoupling(m_device,
-                                      config.resolutionBandwidthHz,
-                                      config.resolutionBandwidthHz,
+                                      static_cast<double>(config.resolutionBandwidthHz),
+                                      static_cast<double>(config.resolutionBandwidthHz),
                                       0.001,
                                       static_cast<uint32_t>(config.rbwShape),
                                       BB_NO_SPUR_REJECT);
@@ -212,7 +213,7 @@ bool BB60CSource::read(algorithm::SpectrumFrame& frame)
         std::chrono::steady_clock::now().time_since_epoch()).count();
     frame.startFrequencyHz = m_startFrequencyHz;
     frame.binWidthHz = m_binWidthHz;
-    frame.resolutionBandwidthHz = m_config.resolutionBandwidthHz;
+    frame.resolutionBandwidthHz = static_cast<double>(m_config.resolutionBandwidthHz);
     frame.referenceLevelDbm = m_config.referenceLevelDbm;
     frame.sourceName = name();
     frame.powerDb = m_maxTrace;

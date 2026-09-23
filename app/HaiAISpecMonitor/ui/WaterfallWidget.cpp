@@ -1,4 +1,5 @@
 #include "WaterfallWidget.h"
+#include "FrequencySpinBox.h"
 
 #include <QAction>
 #include <QColor>
@@ -894,8 +895,8 @@ void WaterfallWidget::paintEvent(QPaintEvent*)
                        (m_viewEndHz - m_viewStartHz), 0.0, 1.0);
         m_direct2D.drawLine(QPointF(selectedX, plot.top()), QPointF(selectedX, plot.bottom()),
                             QColor(255, 232, 122), 1.2F);
-        m_direct2D.drawText(QStringLiteral("选中 %1 MHz")
-                                .arg(m_selectedFrequencyHz / 1e6, 0, 'f', 3),
+        m_direct2D.drawText(QStringLiteral("选中 %1")
+                                .arg(FrequencySpinBox::formatFrequency(m_selectedFrequencyHz)),
                             QRectF(std::min<qreal>(selectedX + 8, plot.right() - 210),
                                    plot.top() + 8, 204, 18),
                             QColor(255, 232, 122), 12.0F, Qt::AlignLeft);

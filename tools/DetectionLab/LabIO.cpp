@@ -1,4 +1,5 @@
 #include "LabIO.h"
+#include "common/Frequency.h"
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
@@ -127,6 +128,25 @@ double number(const QJsonObject& object, const char* key, double fallback)
     if (!value.isDouble() || !std::isfinite(value.toDouble()))
         throw std::runtime_error(std::string("Expected finite numeric config field: ") + key);
     return value.toDouble();
+}
+bool integerHz(const QJsonObject& object, const char* key, std::int64_t fallback,
+               std::int64_t& output)
+{
+    const auto value = object.value(QLatin1String(key));
+    if (!object.contains(key)) {
+        output = fallback;
+        return true;
+    }
+    if (!value.isDouble() || !std::isfinite(value.toDouble())) return false;
+
+    // Preserve exact integer JSON values and round legacy fractional-Hz values.
+    constexpr qint64 invalidInteger = std::numeric_limits<qint64>::min();
+    const qint64 exact = value.toInteger(invalidInteger);
+    if (exact != invalidInteger) {
+        output = static_cast<std::int64_t>(exact);
+        return true;
+    }
+    return scn::common::toIntegerHz(value.toDouble(), output);
 }
 std::size_t count(const QJsonObject& object, const char* key, std::size_t fallback, std::size_t maximum)
 {
@@ -357,10 +377,24 @@ algorithm::DetectionConfig readConfiguration(const QString& path)
     const auto f = object(root, "fusion");
     c.fusion.iou = number(f, "iou", c.fusion.iou);
     c.fusion.overlapRatio = number(f, "overlapRatio", c.fusion.overlapRatio);
-    c.fusion.gapHz = number(f, "gapHz", c.fusion.gapHz);
+    if (!integerHz(f, "gapHz", c.fusion.gapHz, c.fusion.gapHz))
+        throw std::runtime_error("fusion.gapHz must round to an integer Hz value.");
     const auto t = object(root, "tracker");
     c.tracker.overlapRatio = number(t, "overlapRatio", c.tracker.overlapRatio);
     c.tracker.maxMissSeconds = number(t, "maxMissSeconds", c.tracker.maxMissSeconds);
+    if (t.contains("boundaryStabilityEnabled")) {
+        if (!t.value("boundaryStabilityEnabled").isBool())
+            throw std::runtime_error("boundaryStabilityEnabled must be a boolean.");
+        c.tracker.boundaryStabilityEnabled = t.value("boundaryStabilityEnabled").toBool();
+    }
+    c.tracker.maxBandwidthRatio = number(t, "maxBandwidthRatio", c.tracker.maxBandwidthRatio);
+    c.tracker.centerDistanceRatio = number(t, "centerDistanceRatio", c.tracker.centerDistanceRatio);
+    c.tracker.medianWindow = count(t, "medianWindow", c.tracker.medianWindow, 31);
+    c.tracker.smoothingAlpha = number(t, "smoothingAlpha", c.tracker.smoothingAlpha);
+    c.tracker.jumpConfirmationCount = count(t, "jumpConfirmationCount", c.tracker.jumpConfirmationCount, 20);
+    c.tracker.jumpEdgeChangeRatio = number(t, "jumpEdgeChangeRatio", c.tracker.jumpEdgeChangeRatio);
+    c.tracker.jumpCenterToleranceRatio = number(t, "jumpCenterToleranceRatio", c.tracker.jumpCenterToleranceRatio);
+    c.tracker.jumpBandwidthToleranceRatio = number(t, "jumpBandwidthToleranceRatio", c.tracker.jumpBandwidthToleranceRatio);
     std::string error;
     if (!algorithm::validateConfig(c, error)) throw std::runtime_error(error);
     return c;
@@ -374,21 +408,43 @@ QJsonObject configurationJson(const algorithm::DetectionConfig& c)
             {"confidenceThreshold", c.detector.confidenceThreshold}, {"nmsIou", c.detector.nmsIou},
             {"topK", static_cast<qint64>(c.detector.topK)}, {"maxCandidatesPerWindow", static_cast<qint64>(c.detector.maxCandidatesPerWindow)}}},
         {"refine", QJsonObject{{"cnrThresholdDb", c.refine.cnrThresholdDb}}},
-        {"fusion", QJsonObject{{"iou", c.fusion.iou}, {"overlapRatio", c.fusion.overlapRatio}, {"gapHz", c.fusion.gapHz}}},
-        {"tracker", QJsonObject{{"overlapRatio", c.tracker.overlapRatio}, {"maxMissSeconds", c.tracker.maxMissSeconds}}}};
+        {"fusion", QJsonObject{{"iou", c.fusion.iou}, {"overlapRatio", c.fusion.overlapRatio},
+            {"gapHz", static_cast<qint64>(c.fusion.gapHz)}}},
+        {"tracker", QJsonObject{{"overlapRatio", c.tracker.overlapRatio}, {"maxMissSeconds", c.tracker.maxMissSeconds},
+            {"boundaryStabilityEnabled", c.tracker.boundaryStabilityEnabled},
+            {"maxBandwidthRatio", c.tracker.maxBandwidthRatio}, {"centerDistanceRatio", c.tracker.centerDistanceRatio},
+            {"medianWindow", static_cast<qint64>(c.tracker.medianWindow)},
+            {"smoothingAlpha", c.tracker.smoothingAlpha},
+            {"jumpConfirmationCount", static_cast<qint64>(c.tracker.jumpConfirmationCount)},
+            {"jumpEdgeChangeRatio", c.tracker.jumpEdgeChangeRatio},
+            {"jumpCenterToleranceRatio", c.tracker.jumpCenterToleranceRatio},
+            {"jumpBandwidthToleranceRatio", c.tracker.jumpBandwidthToleranceRatio}}}};
 }
 QJsonObject resultJson(const algorithm::DetectionResult& r, std::size_t index)
 {
     const auto& d = r.diagnostics;
+    QJsonArray tracked;
+    for (const auto& item : r.trackedDetections) {
+        tracked.append(QJsonObject{{"raw", signalJson(item.raw)}, {"stable", signalJson(item.stable)},
+            {"boundaryState", static_cast<int>(item.boundaryState)},
+            {"pendingCount", static_cast<qint64>(item.pendingCount)},
+            {"requiredCount", static_cast<qint64>(item.requiredCount)},
+            {"associationIou", item.associationIou}, {"centerDistanceHz", item.centerDistanceHz},
+            {"bandwidthRatio", item.bandwidthRatio},
+            {"measurementBranch", static_cast<int>(item.measurementBranch)},
+            {"diagnostic", QString::fromStdString(item.diagnostic)}});
+    }
     return {{"fileFrameIndex", static_cast<qint64>(index)}, {"sequence", QString::number(r.sequence)},
         {"generation", QString::number(r.generation)}, {"configVersion", QString::number(r.configVersion)},
+        {"trackingSegment", QString::number(r.trackingSegment)},
         {"firstSequence", QString::number(r.firstSequence)}, {"timestampNs", QString::number(r.timestampNs)},
         {"firstTimestampNs", QString::number(r.firstTimestampNs)}, {"startHz", r.startFrequencyHz}, {"binHz", r.binWidthHz},
         {"pointCount", static_cast<qint64>(r.pointCount)}, {"referenceLevelDbm", r.referenceLevelDbm},
         {"resolutionBandwidthHz", r.resolutionBandwidthHz}, {"sourceName", QString::fromStdString(r.sourceName)},
         {"accumulatedFrames", static_cast<qint64>(r.accumulatedFrames)},
         {"requiredFrames", static_cast<qint64>(r.requiredFrames)}, {"stage", static_cast<int>(r.stage)},
-        {"detections", signalsJson(r.detections)}, {"diagnostics", QJsonObject{
+        {"detections", signalsJson(r.detections)}, {"trackedDetections", tracked},
+        {"trackingApplied", r.trackingApplied}, {"diagnostics", QJsonObject{
             {"totalMs", d.processingTimeMs}, {"throughputHz", d.throughputHz},
             {"exportFailed", d.exportFailed}, {"diagnosticError", QString::fromStdString(d.diagnosticError)},
             {"accumulationMs", d.accumulationTimeMs}, {"inferenceMs", d.inferenceTimeMs},

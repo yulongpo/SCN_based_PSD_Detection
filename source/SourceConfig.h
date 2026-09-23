@@ -20,9 +20,9 @@ struct SourceConfig
 {
     algorithm::SourceKind kind = algorithm::SourceKind::BB60C;
     std::string filePath;
-    double centerFrequencyHz = 2.4e9;
-    double bandwidthHz = 100.0e6;
-    double resolutionBandwidthHz = 50.0e3;
+    std::int64_t centerFrequencyHz = 2400000000LL;
+    std::int64_t bandwidthHz = 100000000LL;
+    std::int64_t resolutionBandwidthHz = 50000LL;
     double referenceLevelDbm = -25.0;
     RbwShape rbwShape = RbwShape::Nuttall;
     std::size_t pointCount = 4096;

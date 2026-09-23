@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 namespace scn::algorithm
@@ -23,7 +24,7 @@ struct FusionConfig
 {
     double iou = 0.1;
     double overlapRatio = 0.5;
-    double gapHz = 0.0;
+    std::int64_t gapHz = 0;
 };
 struct TrackerConfig
 {
@@ -35,6 +36,9 @@ struct TrackerConfig
     std::size_t medianWindow = 5;
     double smoothingAlpha = 0.35;
     std::size_t jumpConfirmationCount = 3;
+    double jumpEdgeChangeRatio = 0.15;
+    double jumpCenterToleranceRatio = 0.10;
+    double jumpBandwidthToleranceRatio = 1.20;
 };
 struct DetectionConfig
 {

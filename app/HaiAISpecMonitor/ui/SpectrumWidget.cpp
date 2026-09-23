@@ -1,4 +1,5 @@
 #include "SpectrumWidget.h"
+#include "FrequencySpinBox.h"
 
 #include <QAction>
 #include <QEnterEvent>
@@ -25,14 +26,7 @@ namespace
 {
 QString formatFrequencyLabel(double hz)
 {
-    const double absHz = std::abs(hz);
-    if (absHz >= 1e9)
-        return QStringLiteral("%1 GHz").arg(hz / 1e9, 0, 'f', 3);
-    if (absHz >= 1e6)
-        return QStringLiteral("%1 MHz").arg(hz / 1e6, 0, 'f', 3);
-    if (absHz >= 1e3)
-        return QStringLiteral("%1 kHz").arg(hz / 1e3, 0, 'f', 3);
-    return QStringLiteral("%1 Hz").arg(hz, 0, 'f', 0);
+    return FrequencySpinBox::formatFrequency(hz);
 }
 }
 
@@ -452,6 +446,19 @@ void SpectrumWidget::applyView(double startHz, double endHz, bool notify)
     const double maximumStart = std::max(fullStart, fullEnd - width);
     startHz = std::clamp(startHz, fullStart, maximumStart);
     endHz = startHz + width;
+
+    // Mouse geometry is calculated in double precision, but a committed UI
+    // frequency range has the same whole-Hz contract as the parameter editors.
+    // Preserve sub-Hz source-domain edges only when the entire domain itself is
+    // narrower than one integer-Hz interval.
+    const double integerDomainStart = std::ceil(fullStart);
+    const double integerDomainEnd = std::floor(fullEnd);
+    if (integerDomainEnd > integerDomainStart) {
+        startHz = std::clamp(std::round(startHz), integerDomainStart,
+                             integerDomainEnd - 1.0);
+        endHz = std::clamp(std::round(endHz), startHz + 1.0,
+                           integerDomainEnd);
+    }
     if (std::abs(m_viewStartHz - startHz) < 0.01 &&
         std::abs(m_viewEndHz - endHz) < 0.01 && m_viewInitialized) {
         return;

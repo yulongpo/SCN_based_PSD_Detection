@@ -24,9 +24,9 @@ struct FileSourceMetadata
     bool hasResolutionBandwidth = false;
     bool hasReferenceLevel = false;
     bool hasSpectrumLength = false;
-    double centerFrequencyHz = 0.0;
-    double bandwidthHz = 0.0;
-    double resolutionBandwidthHz = 0.0;
+    std::int64_t centerFrequencyHz = 0;
+    std::int64_t bandwidthHz = 0;
+    std::int64_t resolutionBandwidthHz = 0;
     double referenceLevelDbm = 0.0;
     std::size_t spectrumLength = 0;
     std::uint64_t fileSizeBytes = 0;

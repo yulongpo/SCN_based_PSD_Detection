@@ -72,6 +72,7 @@ struct DetectionResult
     std::uint64_t sequence = 0;
     std::uint64_t generation = 0;
     std::uint64_t configVersion = 0;
+    std::uint64_t trackingSegment = 0;
     std::uint64_t firstSequence = 0;
     std::int64_t firstTimestampNs = 0;
     std::int64_t timestampNs = 0;
@@ -102,6 +103,7 @@ struct DetectionResult
         std::string diagnostic;
     };
     std::vector<TrackedDetection> trackedDetections;
+    bool trackingApplied = false;
     DetectionDiagnostics diagnostics;
 };
 

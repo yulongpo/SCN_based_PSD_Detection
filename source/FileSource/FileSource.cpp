@@ -1,4 +1,5 @@
 #include "FileSource.h"
+#include "common/Frequency.h"
 
 #include <algorithm>
 #include <chrono>
@@ -93,16 +94,13 @@ bool FileSource::inspectFile(const std::string& path,
     metadata.fileSizeBytes = static_cast<std::uint64_t>(fileSize);
     double value = 0.0;
     if (parseNumericToken(fileName, "Fc=", value)) {
-        metadata.centerFrequencyHz = value;
-        metadata.hasCenterFrequency = true;
+        metadata.hasCenterFrequency = scn::common::toIntegerHz(value, metadata.centerFrequencyHz);
     }
     if (parseNumericToken(fileName, "Bw=", value)) {
-        metadata.bandwidthHz = value;
-        metadata.hasBandwidth = true;
+        metadata.hasBandwidth = scn::common::toIntegerHz(value, metadata.bandwidthHz);
     }
     if (parseNumericToken(fileName, "Rbw=", value)) {
-        metadata.resolutionBandwidthHz = value;
-        metadata.hasResolutionBandwidth = true;
+        metadata.hasResolutionBandwidth = scn::common::toIntegerHz(value, metadata.resolutionBandwidthHz);
     }
     if (parseNumericToken(fileName, "Reflevel=", value) ||
         parseNumericToken(fileName, "RefLevel=", value)) {
@@ -274,8 +272,8 @@ bool FileSource::read(algorithm::SpectrumFrame& frame)
         return false;
     }
 
-    const double centerFrequencyHz = m_config.centerFrequencyHz;
-    const double bandwidthHz = m_config.bandwidthHz;
+    const double centerFrequencyHz = static_cast<double>(m_config.centerFrequencyHz);
+    const double bandwidthHz = static_cast<double>(m_config.bandwidthHz);
     frame = {};
     frame.sequence = ++m_sequence;
     // DAT has no per-frame timestamps: replay time must not depend on GPU speed.
@@ -283,7 +281,7 @@ bool FileSource::read(algorithm::SpectrumFrame& frame)
         static_cast<long double>(m_frameIndex++) * 1000000000.0L / std::max(1, m_config.frameRateHz));
     frame.startFrequencyHz = centerFrequencyHz - bandwidthHz / 2.0;
     frame.binWidthHz = bandwidthHz / static_cast<double>(m_frameLength);
-    frame.resolutionBandwidthHz = m_config.resolutionBandwidthHz;
+    frame.resolutionBandwidthHz = static_cast<double>(m_config.resolutionBandwidthHz);
     frame.referenceLevelDbm = m_config.referenceLevelDbm;
     frame.sourceName = name();
     frame.powerDb = m_frameBuffer;

@@ -43,9 +43,10 @@ bool SyntheticSpectrumSource::read(algorithm::SpectrumFrame& frame)
     frame.sequence = ++m_sequence;
     frame.timestampNs = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
-    frame.startFrequencyHz = m_config.centerFrequencyHz - m_config.bandwidthHz / 2.0;
-    frame.binWidthHz = m_config.bandwidthHz / static_cast<double>(m_config.pointCount);
-    frame.resolutionBandwidthHz = m_config.resolutionBandwidthHz;
+    frame.startFrequencyHz = static_cast<double>(m_config.centerFrequencyHz) -
+        static_cast<double>(m_config.bandwidthHz) / 2.0;
+    frame.binWidthHz = static_cast<double>(m_config.bandwidthHz) / static_cast<double>(m_config.pointCount);
+    frame.resolutionBandwidthHz = static_cast<double>(m_config.resolutionBandwidthHz);
     frame.referenceLevelDbm = m_config.referenceLevelDbm;
     frame.sourceName = m_name;
     frame.powerDb.resize(m_config.pointCount);

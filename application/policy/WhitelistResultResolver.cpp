@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_map>
 
 namespace scn::application::policy
 {
@@ -51,12 +52,17 @@ std::vector<PolicySignal> WhitelistResultResolver::resolve(
         result.displayId = "W-" + std::to_string(whitelist.id);
         result.representativeSignalId = source.id;
         result.measurement = source;
+        result.stableMeasurement = source;
+        result.rawMeasurement = source;
+        result.measurementBranch = source.branch;
         result.measurement.id = whitelist.id;
-        result.measurement.startFrequencyHz = whitelist.startFrequencyHz;
-        result.measurement.endFrequencyHz = whitelist.endFrequencyHz;
+        result.measurement.startFrequencyHz = static_cast<double>(whitelist.startFrequencyHz);
+        result.measurement.endFrequencyHz = static_cast<double>(whitelist.endFrequencyHz);
         result.measurement.centerFrequencyHz =
-            (whitelist.startFrequencyHz + whitelist.endFrequencyHz) / 2.0;
-        result.measurement.bandwidthHz = whitelist.endFrequencyHz - whitelist.startFrequencyHz;
+            (static_cast<double>(whitelist.startFrequencyHz) +
+             static_cast<double>(whitelist.endFrequencyHz)) / 2.0;
+        result.measurement.bandwidthHz = static_cast<double>(whitelist.endFrequencyHz) -
+                                         static_cast<double>(whitelist.startFrequencyHz);
         result.whitelistIds.push_back(whitelist.id);
         result.whitelistNames.push_back(whitelist.name);
         result.originalSignalIds.reserve(matches.size());
@@ -74,9 +80,45 @@ std::vector<PolicySignal> WhitelistResultResolver::resolve(
         result.id = rawSignals[index].id;
         result.displayId = std::to_string(rawSignals[index].id);
         result.measurement = rawSignals[index];
+        result.stableMeasurement = rawSignals[index];
+        result.rawMeasurement = rawSignals[index];
+        result.measurementBranch = rawSignals[index].branch;
         result.representativeSignalId = rawSignals[index].id;
         result.originalSignalIds.push_back(rawSignals[index].id);
         resolved.push_back(std::move(result));
+    }
+    return resolved;
+}
+
+std::vector<PolicySignal> WhitelistResultResolver::resolve(
+    const std::vector<algorithm::DetectionResult::TrackedDetection>& trackedSignals,
+    const std::vector<WhitelistEntry>& whitelists) const
+{
+    std::vector<algorithm::DetectedSignal> stableSignals;
+    stableSignals.reserve(trackedSignals.size());
+    std::unordered_map<std::int64_t, const algorithm::DetectionResult::TrackedDetection*> byId;
+    byId.reserve(trackedSignals.size());
+    for (const auto& tracked : trackedSignals) {
+        stableSignals.push_back(tracked.stable);
+        byId.emplace(tracked.stable.id, &tracked);
+    }
+    auto resolved = resolve(stableSignals, whitelists);
+    for (auto& policySignal : resolved) {
+        const auto representativeId = policySignal.representativeSignalId;
+        const auto found = byId.find(representativeId);
+        if (found == byId.end()) continue;
+        const auto& source = *found->second;
+        policySignal.rawMeasurement = source.raw;
+        policySignal.stableMeasurement = source.stable;
+        policySignal.boundaryState = source.boundaryState;
+        policySignal.pendingBoundaryCount = source.pendingCount;
+        policySignal.requiredBoundaryCount = source.requiredCount;
+        policySignal.measurementBranch = source.measurementBranch;
+        policySignal.associationIou = source.associationIou;
+        policySignal.associationCenterDistanceHz = source.centerDistanceHz;
+        policySignal.associationBandwidthRatio = source.bandwidthRatio;
+        policySignal.boundaryDiagnostic = source.diagnostic;
+        policySignal.hasBoundaryMetadata = true;
     }
     return resolved;
 }

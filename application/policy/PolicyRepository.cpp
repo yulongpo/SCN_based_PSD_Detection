@@ -1,4 +1,5 @@
 #include "PolicyRepository.h"
+#include "common/Frequency.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -10,6 +11,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <set>
 
 namespace scn::application::policy
@@ -29,16 +31,17 @@ QString applicationConfigDirectory()
 QJsonObject whitelistToJson(const WhitelistEntry& item)
 {
     return {{"id", item.id}, {"name", QString::fromStdString(item.name)},
-        {"enabled", item.enabled}, {"startFrequencyHz", item.startFrequencyHz},
-        {"endFrequencyHz", item.endFrequencyHz}, {"note", QString::fromStdString(item.note)}};
+        {"enabled", item.enabled}, {"startFrequencyHz", static_cast<qint64>(item.startFrequencyHz)},
+        {"endFrequencyHz", static_cast<qint64>(item.endFrequencyHz)}, {"note", QString::fromStdString(item.note)}};
 }
 
 QJsonObject ruleToJson(const AlarmRule& rule)
 {
     return {{"id", rule.id}, {"name", QString::fromStdString(rule.name)},
-        {"enabled", rule.enabled}, {"startFrequencyHz", rule.startFrequencyHz},
-        {"endFrequencyHz", rule.endFrequencyHz}, {"minBandwidthHz", rule.minBandwidthHz},
-        {"maxBandwidthHz", rule.maxBandwidthHz}, {"useMinSignalLevel", rule.useMinSignalLevel},
+        {"enabled", rule.enabled}, {"startFrequencyHz", static_cast<qint64>(rule.startFrequencyHz)},
+        {"endFrequencyHz", static_cast<qint64>(rule.endFrequencyHz)},
+        {"minBandwidthHz", static_cast<qint64>(rule.minBandwidthHz)},
+        {"maxBandwidthHz", static_cast<qint64>(rule.maxBandwidthHz)}, {"useMinSignalLevel", rule.useMinSignalLevel},
         {"minSignalLevelDbm", rule.minSignalLevelDbm}, {"useMinCnr", rule.useMinCnr},
         {"minCnrDb", rule.minCnrDb}, {"useMinConfidence", rule.useMinConfidence},
         {"minConfidence", rule.minConfidence}, {"level", static_cast<int>(rule.level)},
@@ -54,11 +57,30 @@ double number(const QJsonObject& object, const char* key, double fallback = 0.0)
     return value.isDouble() ? value.toDouble() : fallback;
 }
 
-bool readRange(const QJsonObject& object, double& start, double& end)
+bool readIntegerHz(const QJsonObject& object, const char* key, double fallback,
+                   std::int64_t& output)
 {
-    start = number(object, "startFrequencyHz", number(object, "bgn_freq"));
-    end = number(object, "endFrequencyHz", number(object, "end_freq"));
-    return std::isfinite(start) && std::isfinite(end) && start < end;
+    const auto value = object.value(QLatin1String(key));
+    if (!value.isDouble()) return scn::common::toIntegerHz(fallback, output);
+
+    // QJsonValue::toDouble() cannot represent every int64 Hz value. Prefer the
+    // exact integer representation for newly written configurations and use
+    // rounded floating-point conversion only for legacy fractional-Hz JSON.
+    constexpr qint64 invalidInteger = std::numeric_limits<qint64>::min();
+    const qint64 integer = value.toInteger(invalidInteger);
+    if (integer != invalidInteger) {
+        output = static_cast<std::int64_t>(integer);
+        return true;
+    }
+    return scn::common::toIntegerHz(value.toDouble(), output);
+}
+
+bool readRange(const QJsonObject& object, std::int64_t& start, std::int64_t& end)
+{
+    const double legacyStart = number(object, "bgn_freq");
+    const double legacyEnd = number(object, "end_freq");
+    return readIntegerHz(object, "startFrequencyHz", legacyStart, start) &&
+           readIntegerHz(object, "endFrequencyHz", legacyEnd, end) && start < end;
 }
 }
 
@@ -81,8 +103,7 @@ bool PolicyRepository::validate(const PolicyConfig& config, std::string& error)
         if (item.id <= 0 || !whitelistIds.insert(item.id).second) {
             error = "白名单 ID 必须为正数且不能重复。"; return false;
         }
-        if (!std::isfinite(item.startFrequencyHz) || !std::isfinite(item.endFrequencyHz) ||
-            item.startFrequencyHz >= item.endFrequencyHz) {
+        if (item.startFrequencyHz >= item.endFrequencyHz) {
             error = "白名单频率范围无效。"; return false;
         }
     }
@@ -91,9 +112,7 @@ bool PolicyRepository::validate(const PolicyConfig& config, std::string& error)
         if (rule.id <= 0 || !ruleIds.insert(rule.id).second) {
             error = "告警规则 ID 必须为正数且不能重复。"; return false;
         }
-        if (!std::isfinite(rule.startFrequencyHz) || !std::isfinite(rule.endFrequencyHz) ||
-            rule.startFrequencyHz >= rule.endFrequencyHz || rule.consecutiveHits == 0 ||
-            !std::isfinite(rule.minBandwidthHz) || !std::isfinite(rule.maxBandwidthHz) ||
+        if (rule.startFrequencyHz >= rule.endFrequencyHz || rule.consecutiveHits == 0 ||
             !std::isfinite(rule.minDurationSeconds) || !std::isfinite(rule.clearDelaySeconds) ||
             rule.minDurationSeconds < 0 || rule.clearDelaySeconds < 0 ||
             (rule.level != AlarmLevel::General && rule.level != AlarmLevel::Critical) ||
@@ -129,8 +148,9 @@ bool PolicyRepository::load(const std::string& path, PolicyConfig& config, std::
         nextWhitelistId = std::max(nextWhitelistId, item.id + 1);
         item.name = object.value("name").toString().toStdString();
         item.enabled = object.value("enabled").toBool(object.value("enable").toInt(1) != 0);
-        item.startFrequencyHz = number(object, "startFrequencyHz", number(object, "bgn_freq"));
-        item.endFrequencyHz = number(object, "endFrequencyHz", number(object, "end_freq"));
+        if (!readRange(object, item.startFrequencyHz, item.endFrequencyHz)) {
+            error = "白名单频率范围无效。"; return false;
+        }
         item.note = object.value("note").toString().toStdString();
         config.whitelists.push_back(std::move(item));
     }
@@ -147,8 +167,10 @@ bool PolicyRepository::load(const std::string& path, PolicyConfig& config, std::
         if (!readRange(object, rule.startFrequencyHz, rule.endFrequencyHz)) {
             error = "告警规则频率范围无效。"; return false;
         }
-        rule.minBandwidthHz = number(object, "minBandwidthHz", number(object, "sig_min_bw"));
-        rule.maxBandwidthHz = number(object, "maxBandwidthHz", number(object, "sig_max_bw"));
+        if (!readIntegerHz(object, "minBandwidthHz", number(object, "sig_min_bw"), rule.minBandwidthHz) ||
+            !readIntegerHz(object, "maxBandwidthHz", number(object, "sig_max_bw"), rule.maxBandwidthHz)) {
+            error = "告警规则带宽阈值无效。"; return false;
+        }
         rule.useMinSignalLevel = object.value("useMinSignalLevel").toBool(false);
         rule.minSignalLevelDbm = static_cast<float>(number(object, "minSignalLevelDbm"));
         rule.useMinCnr = object.value("useMinCnr").toBool(false);

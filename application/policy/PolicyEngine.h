@@ -82,6 +82,8 @@ private:
 
     PolicyConfig m_config;
     std::uint64_t m_generation = 0;
+    std::uint64_t m_detectionConfigVersion = 0;
+    std::uint64_t m_trackingSegment = 0;
     std::uint64_t m_segment = 0;
     std::uint64_t m_revision = 0;
     std::uint64_t m_nextEventId = 1;

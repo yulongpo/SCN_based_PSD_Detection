@@ -6,6 +6,7 @@
 #include "../application/SessionPipeline.h"
 #include "../source/FileSource/FileSource.h"
 #include "../runtime/BoundedChannel.h"
+#include "../common/Frequency.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -131,6 +132,104 @@ void algorithmTests()
     CHECK(observation[0].id == secondId && observation[0].occurrenceCount == 2);
     observation = {signal(100,110)}; tracker.update(observation, 1000000002LL, {}, 1); CHECK(observation[0].id != secondId);
 
+    // Short-window median + EMA suppress alternating edge noise without
+    // delaying the first observation.
+    tracker.reset();
+    TrackerConfig stableConfig;
+    std::vector<DetectionResult::TrackedDetection> tracked;
+    auto gridFrame = [](std::uint64_t sequence) {
+        auto value = frame(sequence, 512);
+        value.startFrequencyHz = 0.0;
+        value.binWidthHz = 1.0;
+        value.powerDb.assign(512, -90.0F);
+        value.timestampNs = static_cast<std::int64_t>(sequence) * 10000000;
+        return value;
+    };
+    auto stableFrame = gridFrame(1);
+    observation = {signal(100, 200)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    const auto stableId = tracked[0].stable.id;
+    CHECK(tracked[0].raw.startFrequencyHz == 100 && tracked[0].stable.startFrequencyHz == 100);
+    double rawCenterSquared = 0.0, stableCenterSquared = 0.0;
+    for (std::uint64_t sequence = 2; sequence <= 9; ++sequence) {
+        const double delta = sequence % 2 ? 2.0 : -2.0;
+        stableFrame = gridFrame(sequence);
+        observation = {signal(100 + delta, 200 + delta)};
+        CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+        CHECK(tracked[0].stable.id == stableId);
+        const double rawDelta = tracked[0].raw.centerFrequencyHz - 150.0;
+        const double stableDelta = tracked[0].stable.centerFrequencyHz - 150.0;
+        rawCenterSquared += rawDelta * rawDelta;
+        stableCenterSquared += stableDelta * stableDelta;
+    }
+    CHECK(stableCenterSquared <= rawCenterSquared * 0.25);
+
+    // A tenfold contraction is held for two distinct frames and accepted on 3.
+    tracker.reset();
+    stableFrame = gridFrame(1); observation = {signal(100, 200)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    const auto jumpId = tracked[0].stable.id;
+    for (std::uint64_t sequence = 2; sequence <= 3; ++sequence) {
+        stableFrame = gridFrame(sequence); observation = {signal(120, 130)};
+        CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+        CHECK(tracked[0].stable.id == jumpId);
+        CHECK(tracked[0].stable.startFrequencyHz == 100);
+        CHECK(tracked[0].boundaryState == BoundaryState::PendingChange);
+        CHECK(tracked[0].pendingCount == sequence - 1);
+    }
+    stableFrame = gridFrame(4); observation = {signal(120, 130)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    CHECK(tracked[0].stable.id == jumpId && tracked[0].stable.startFrequencyHz == 120);
+    CHECK(tracked[0].boundaryState == BoundaryState::Stable);
+
+    // Returning to the established band cancels a one-frame jump candidate.
+    tracker.reset();
+    stableFrame = gridFrame(1); observation = {signal(100, 200)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    stableFrame = gridFrame(2); observation = {signal(120, 130)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    const auto recoveryId = tracked[0].stable.id;
+    stableFrame = gridFrame(3); observation = {signal(100, 200)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    CHECK(tracked[0].stable.id == recoveryId && tracked[0].stable.startFrequencyHz == 100);
+    CHECK(tracked[0].boundaryState == BoundaryState::Stable);
+
+    // Split/merge-style non-unique jumps are not forced onto either old ID.
+    tracker.reset();
+    stableFrame = gridFrame(1); observation = {signal(80, 180), signal(120, 220)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    stableFrame = gridFrame(2); observation = {signal(100, 200)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    CHECK(tracked.size() == 1 && tracked[0].boundaryState == BoundaryState::Ambiguous);
+    CHECK(tracked[0].diagnostic.find("不唯一") != std::string::npos);
+
+    // A cancelled candidate update does not mutate identity/history state.
+    tracker.reset();
+    stableFrame = gridFrame(1); observation = {signal(100, 200)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    stableFrame = gridFrame(2); observation = {signal(120, 130)};
+    CHECK(!tracker.update(observation, tracked, stableFrame, stableConfig, 8, [] { return true; }));
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    CHECK(tracked[0].boundaryState == BoundaryState::PendingChange && tracked[0].pendingCount == 1);
+
+    // Frame gaps and inconsistent candidate bands restart confirmation.
+    tracker.reset();
+    stableFrame = gridFrame(1); observation = {signal(100, 200)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    stableFrame = gridFrame(2); observation = {signal(120, 130)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    stableFrame = gridFrame(4); observation = {signal(120, 130)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    CHECK(tracked[0].pendingCount == 1);
+    stableFrame = gridFrame(5); observation = {signal(125, 135)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    CHECK(tracked[0].pendingCount == 1);
+    stableFrame = gridFrame(6); observation.clear();
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    stableFrame = gridFrame(7); observation = {signal(125, 135)};
+    CHECK(tracker.update(observation, tracked, stableFrame, stableConfig, 8));
+    CHECK(tracked[0].pendingCount == 1);
+
     // More than one 64-edge batch per observation: identical dense intervals
     // require deterministic ID-order matching all the way through a refill.
     tracker.reset();
@@ -148,6 +247,12 @@ void algorithmTests()
     CHECK(engine.initialize(config));
     auto result = engine.process(frame(1));
     CHECK(result.stage == DetectionStage::Accumulating && result.accumulatedFrames == 1 && result.detections.size() == 1);
+    CHECK(result.trackedDetections.size() == 1);
+    CHECK(result.trackedDetections[0].raw.startFrequencyHz == result.detections[0].startFrequencyHz);
+    CHECK(result.trackedDetections[0].stable.startFrequencyHz == result.detections[0].startFrequencyHz);
+    CHECK(result.trackedDetections[0].stable.signalLevelDbm == -50.0F);
+    CHECK(result.trackedDetections[0].stable.snrDb == 50.0F);
+    CHECK(result.trackedDetections[0].measurementBranch == SpectrumBranch::Average);
     CHECK(result.referenceLevelDbm == -20 && result.sourceName == "TEST");
     const auto id = result.detections[0].id;
     CHECK(engine.updateConfig(config) == ConfigApplyResult::Applied);
@@ -173,6 +278,13 @@ void algorithmTests()
     engine.setObserver(nullptr);
     result = engine.process(frame(4));
     CHECK(result.stage == DetectionStage::Completed && !result.diagnostics.exportFailed && result.detections[0].occurrenceCount == 3);
+    auto rawMode = engine.config();
+    rawMode.tracker.boundaryStabilityEnabled = false;
+    CHECK(engine.updateConfig(rawMode) == ConfigApplyResult::RequiresReset);
+    result = engine.process(frame(5));
+    CHECK(result.stage == DetectionStage::Accumulating && result.trackedDetections.size() == 1);
+    CHECK(result.trackedDetections[0].boundaryState == BoundaryState::Disabled);
+    CHECK(result.trackedDetections[0].stable.startFrequencyHz == result.trackedDetections[0].raw.startFrequencyHz);
 }
 void channelTests()
 {
@@ -263,6 +375,28 @@ void hashTests()
     CHECK(scn::algorithm::detail::sha256(reinterpret_cast<const std::uint8_t*>(abc.data()), abc.size()) ==
           "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
 }
+void frequencyTests()
+{
+    using scn::common::FrequencyHz;
+    FrequencyHz value = 0;
+    CHECK(scn::common::parseFrequencyHz("2.4GHz", value) && value == 2400000000LL);
+    CHECK(scn::common::parseFrequencyHz(" 2.4 ghz ", value) && value == 2400000000LL);
+    CHECK(scn::common::parseFrequencyHz("2400M", value) && value == 2400000000LL);
+    CHECK(scn::common::parseFrequencyHz("50KHZ", value) && value == 50000);
+    CHECK(scn::common::parseFrequencyHz("9k", value) && value == 9000);
+    CHECK(scn::common::parseFrequencyHz("50", value) && value == 50);
+    CHECK(scn::common::parseFrequencyHz("1.5 Hz", value) && value == 2);
+    CHECK(scn::common::parseFrequencyHz("-1.5Hz", value) && value == -2);
+    CHECK(!scn::common::parseFrequencyHz("12xyz", value));
+    CHECK(!scn::common::parseFrequencyHz("nan Hz", value));
+    CHECK(!scn::common::parseFrequencyHz("1e309GHz", value));
+    CHECK(!scn::common::toIntegerHz(std::ldexp(1.0L, 63), value));
+    CHECK(scn::common::formatFrequencyHz(999) == "999 Hz");
+    CHECK(scn::common::formatFrequencyHz(1001) == "1.001 kHz");
+    CHECK(scn::common::formatFrequencyHz(1500000) == "1.5 MHz");
+    CHECK(scn::common::formatFrequencyHz(2400000000LL) == "2.4 GHz");
+    CHECK(scn::common::formatFrequencyHz(1000000001.0) == "1.000000001 GHz");
+}
 }
 
 // Test executable only: resolves the engine factory without linking/loading CUDA.
@@ -280,6 +414,7 @@ int main(int argc, char** argv)
         if (group == "pipeline" || group == "all") pipelineTests();
         if (group == "source" || group == "all") sourceTests();
         if (group == "hash" || group == "all") hashTests();
+        if (group == "frequency" || group == "all") frequencyTests();
         std::cout << group << ": passed\n"; return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

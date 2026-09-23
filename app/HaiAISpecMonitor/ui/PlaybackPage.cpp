@@ -1,4 +1,5 @@
 #include "PlaybackPage.h"
+#include "FrequencySpinBox.h"
 
 #include <QAbstractItemView>
 #include <QFileDialog>
@@ -121,8 +122,8 @@ void PlaybackPage::buildListPage()
     m_fileTable->setObjectName(QStringLiteral("isaTable"));
     m_fileTable->setHorizontalHeaderLabels({
         QStringLiteral("序号"), QStringLiteral("文件名"), QStringLiteral("采集设备"),
-        QStringLiteral("起始频率(MHz)"), QStringLiteral("终止频率(MHz)"),
-        QStringLiteral("RBW(kHz)"), QStringLiteral("开始时间"), QStringLiteral("结束时间"),
+        QStringLiteral("起始频率"), QStringLiteral("终止频率"),
+        QStringLiteral("RBW"), QStringLiteral("开始时间"), QStringLiteral("结束时间"),
         QStringLiteral("总时长"), QStringLiteral("大小"), QStringLiteral("信号数"), QStringLiteral("告警数"),
         QStringLiteral("操作")
     });
@@ -187,7 +188,7 @@ void PlaybackPage::buildDetailPage()
     m_signalTable = new QTableWidget(0, 7, m_detailPage);
     m_signalTable->setObjectName(QStringLiteral("isaTable"));
     m_signalTable->setHorizontalHeaderLabels({
-        QStringLiteral("ID"), QStringLiteral("中心频率(MHz)"), QStringLiteral("带宽(kHz)"),
+        QStringLiteral("ID"), QStringLiteral("中心频率"), QStringLiteral("带宽"),
         QStringLiteral("信号类型"), QStringLiteral("告警等级"), QStringLiteral("最近出现时间"),
         QStringLiteral("出现次数")
     });
@@ -200,14 +201,14 @@ void PlaybackPage::buildDetailPage()
 }
 
 void PlaybackPage::rememberFile(const QString& path, const QString& sourceName,
-                                double startFrequencyHz, double endFrequencyHz,
-                                double resolutionBandwidthHz, int signalCount,
+                                qint64 startFrequencyHz, qint64 endFrequencyHz,
+                                qint64 resolutionBandwidthHz, int signalCount,
                                 int alarmCount)
 {
     if (path.isEmpty()) return;
     for (auto& record : m_records) {
         if (record.path != path) continue;
-        const bool changed = startFrequencyHz != 0.0 && endFrequencyHz != 0.0 &&
+        const bool changed = startFrequencyHz != 0 && endFrequencyHz != 0 &&
             (record.startFrequencyHz != startFrequencyHz ||
              record.endFrequencyHz != endFrequencyHz ||
              record.rbwHz != resolutionBandwidthHz ||
@@ -289,9 +290,9 @@ void PlaybackPage::refreshTable()
         m_fileTable->setItem(row, 0, item(QString::number(++index)));
         m_fileTable->setItem(row, 1, item(record.fileName));
         m_fileTable->setItem(row, 2, item(record.source));
-        m_fileTable->setItem(row, 3, item(QString::number(record.startFrequencyHz / 1e6, 'f', 3)));
-        m_fileTable->setItem(row, 4, item(QString::number(record.endFrequencyHz / 1e6, 'f', 3)));
-        m_fileTable->setItem(row, 5, item(QString::number(record.rbwHz / 1e3, 'f', 3)));
+        m_fileTable->setItem(row, 3, item(FrequencySpinBox::formatFrequency(record.startFrequencyHz)));
+        m_fileTable->setItem(row, 4, item(FrequencySpinBox::formatFrequency(record.endFrequencyHz)));
+        m_fileTable->setItem(row, 5, item(FrequencySpinBox::formatFrequency(record.rbwHz)));
         m_fileTable->setItem(row, 6, item(record.begin.toString(QStringLiteral("yyyy-MM-dd hh:mm:ss"))));
         m_fileTable->setItem(row, 7, item(record.end.toString(QStringLiteral("yyyy-MM-dd hh:mm:ss"))));
         m_fileTable->setItem(row, 8, item(formatDuration(record.begin, record.end)));
@@ -349,7 +350,7 @@ void PlaybackPage::importFile()
         this, QStringLiteral("导入频谱文件"), QString(),
         QStringLiteral("Spectrum files (*.bin *.dat *.txt *.csv *.asc);;All files (*.*)"));
     if (path.isEmpty()) return;
-    rememberFile(path, QStringLiteral("FILE"), 0.0, 0.0, 0.0);
+    rememberFile(path, QStringLiteral("FILE"), 0, 0, 0);
     emit replayRequested(path);
 }
 
@@ -365,12 +366,12 @@ void PlaybackPage::exportList()
         return;
     }
     QTextStream stream(&output);
-    stream << "index,file,source,start_mhz,end_mhz,rbw_khz,begin,end,signal_count,alarm_count\n";
+    stream << "index,file,source,start_hz,end_hz,rbw_hz,begin,end,signal_count,alarm_count\n";
     for (int i = 0; i < m_records.size(); ++i) {
         const auto& record = m_records.at(i);
         stream << i + 1 << ',' << record.fileName << ',' << record.source << ','
-               << record.startFrequencyHz / 1e6 << ',' << record.endFrequencyHz / 1e6 << ','
-               << record.rbwHz / 1e3 << ',' << record.begin.toString(Qt::ISODate) << ','
+               << record.startFrequencyHz << ',' << record.endFrequencyHz << ','
+               << record.rbwHz << ',' << record.begin.toString(Qt::ISODate) << ','
                << record.end.toString(Qt::ISODate) << ',' << record.signalCount << ','
                << record.alarmCount << '\n';
     }
@@ -433,20 +434,20 @@ void PlaybackPage::populateDetails(const PlaybackRecord& record)
     const int resultCount = record.signalRows.size();
     m_detailTitle->setText(QStringLiteral("信号明细 - %1").arg(record.fileName));
     m_detailSummary->setText(QStringLiteral(
-        "设备：%1    频段：%2 - %3 MHz    RBW：%4 kHz    文件：%5\n"
+        "设备：%1    频段：%2 - %3    RBW：%4    文件：%5\n"
         "结果信号数：%6。可导出当前回放结果为 CSV 或 JSON。")
         .arg(record.source)
-        .arg(record.startFrequencyHz / 1e6, 0, 'f', 3)
-        .arg(record.endFrequencyHz / 1e6, 0, 'f', 3)
-        .arg(record.rbwHz / 1e3, 0, 'f', 3)
+        .arg(FrequencySpinBox::formatFrequency(record.startFrequencyHz))
+        .arg(FrequencySpinBox::formatFrequency(record.endFrequencyHz))
+        .arg(FrequencySpinBox::formatFrequency(record.rbwHz))
         .arg(record.path)
         .arg(resultCount));
     m_signalTable->setRowCount(resultCount);
     for (int row = 0; row < resultCount; ++row) {
         const auto& signal = record.signalRows.at(row);
         m_signalTable->setItem(row, 0, item(signal.id));
-        m_signalTable->setItem(row, 1, item(signal.centerFrequencyMHz));
-        m_signalTable->setItem(row, 2, item(signal.bandwidthKHz));
+        m_signalTable->setItem(row, 1, item(FrequencySpinBox::formatFrequency(signal.centerFrequencyHz)));
+        m_signalTable->setItem(row, 2, item(FrequencySpinBox::formatFrequency(signal.bandwidthHz)));
         m_signalTable->setItem(row, 3, item(signal.type));
         m_signalTable->setItem(row, 4, item(signal.alarm));
         m_signalTable->setItem(row, 5, item(signal.lastSeen));
@@ -479,8 +480,8 @@ void PlaybackPage::exportCurrentSignals()
         QJsonArray array;
         for (const auto& signal : it->signalRows) {
             array.append(QJsonObject{{QStringLiteral("id"), signal.id},
-                {QStringLiteral("centerFrequencyMHz"), signal.centerFrequencyMHz},
-                {QStringLiteral("bandwidthKHz"), signal.bandwidthKHz},
+                {QStringLiteral("centerFrequencyHz"), static_cast<qint64>(signal.centerFrequencyHz)},
+                {QStringLiteral("bandwidthHz"), static_cast<qint64>(signal.bandwidthHz)},
                 {QStringLiteral("type"), signal.type}, {QStringLiteral("alarm"), signal.alarm},
                 {QStringLiteral("lastSeen"), signal.lastSeen},
                 {QStringLiteral("occurrenceCount"), signal.occurrenceCount},
@@ -489,9 +490,9 @@ void PlaybackPage::exportCurrentSignals()
         output.write(QJsonDocument(array).toJson(QJsonDocument::Indented));
     } else {
         QTextStream stream(&output);
-        stream << "id,center_frequency_mhz,bandwidth_khz,type,alarm,last_seen,occurrence_count\n";
+        stream << "id,center_frequency_hz,bandwidth_hz,type,alarm,last_seen,occurrence_count\n";
         for (const auto& signal : it->signalRows) {
-            stream << signal.id << ',' << signal.centerFrequencyMHz << ',' << signal.bandwidthKHz
+            stream << signal.id << ',' << signal.centerFrequencyHz << ',' << signal.bandwidthHz
                    << ',' << signal.type << ',' << signal.alarm << ',' << signal.lastSeen << ','
                    << signal.occurrenceCount << '\n';
         }

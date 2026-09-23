@@ -18,6 +18,8 @@ class QSpinBox;
 namespace scn::app
 {
 
+class FrequencySpinBox;
+
 namespace policy = scn::application::policy;
 
 /**
@@ -106,9 +108,18 @@ private:
     QDoubleSpinBox* m_cnr = nullptr;
     QDoubleSpinBox* m_fusionIou = nullptr;
     QDoubleSpinBox* m_fusionOverlap = nullptr;
-    QDoubleSpinBox* m_fusionGap = nullptr;
+    FrequencySpinBox* m_fusionGap = nullptr;
     QDoubleSpinBox* m_trackOverlap = nullptr;
     QDoubleSpinBox* m_maxMiss = nullptr;
+    QCheckBox* m_boundaryStability = nullptr;
+    QDoubleSpinBox* m_trackMaxBandwidthRatio = nullptr;
+    QDoubleSpinBox* m_trackCenterDistanceRatio = nullptr;
+    QSpinBox* m_trackMedianWindow = nullptr;
+    QDoubleSpinBox* m_trackSmoothingAlpha = nullptr;
+    QSpinBox* m_trackJumpConfirmations = nullptr;
+    QDoubleSpinBox* m_trackJumpEdgeChangeRatio = nullptr;
+    QDoubleSpinBox* m_trackJumpCenterToleranceRatio = nullptr;
+    QDoubleSpinBox* m_trackJumpBandwidthToleranceRatio = nullptr;
     QSpinBox* m_maxSignals = nullptr;
     QLabel* m_detectionFeedback = nullptr;
 };

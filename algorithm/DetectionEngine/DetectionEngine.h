@@ -40,6 +40,7 @@ private:
     std::size_t m_geometryCount = 0;
     bool m_hasGeometry = false;
     std::uint64_t m_generation = 0, m_configVersion = 0, m_lastSequence = 0;
+    std::uint64_t m_trackingSegment = 0;
     std::int64_t m_lastTimestamp = 0;
     std::vector<float> m_normalized;
     ScnModelOutput m_modelOutput;

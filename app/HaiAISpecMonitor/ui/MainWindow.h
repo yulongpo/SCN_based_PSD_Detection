@@ -42,6 +42,8 @@ class QTimer;
 namespace scn::app
 {
 
+class FrequencySpinBox;
+
 namespace policy = scn::application::policy;
 
 class MainWindow final : public QMainWindow
@@ -153,11 +155,11 @@ private:
     QWidget* m_rbwShapeGroup = nullptr;
     QLineEdit* m_filePath = nullptr;
     QPushButton* m_browseButton = nullptr;
-    QDoubleSpinBox* m_centerFrequency = nullptr;
-    QDoubleSpinBox* m_bandwidth = nullptr;
-    QDoubleSpinBox* m_startFrequency = nullptr;
-    QDoubleSpinBox* m_endFrequency = nullptr;
-    QDoubleSpinBox* m_resolutionBandwidth = nullptr;
+    FrequencySpinBox* m_centerFrequency = nullptr;
+    FrequencySpinBox* m_bandwidth = nullptr;
+    FrequencySpinBox* m_startFrequency = nullptr;
+    FrequencySpinBox* m_endFrequency = nullptr;
+    FrequencySpinBox* m_resolutionBandwidth = nullptr;
     QDoubleSpinBox* m_referenceLevel = nullptr;
     QComboBox* m_rbwShape = nullptr;
     QSpinBox* m_pointCount = nullptr;

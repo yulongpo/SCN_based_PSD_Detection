@@ -8,6 +8,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QVariant>
 
 #include <utility>
 
@@ -34,7 +35,9 @@ bool AlarmHistoryStore::initializeDatabase(std::string& error)
         "first_hit_ns INTEGER, last_hit_ns INTEGER, triggered_ns INTEGER, ended_ns INTEGER,"
         "end_reason TEXT, source_name TEXT, policy_version INTEGER, matched_rule_ids TEXT, matched_whitelist_ids TEXT, start_frequency_hz REAL,"
         "end_frequency_hz REAL, bandwidth_hz REAL, signal_level_dbm REAL, cnr_db REAL,"
-        "confidence REAL, acknowledgement_note TEXT, acknowledged_at_ms INTEGER, updated_wall_ms INTEGER)"))) {
+        "confidence REAL, acknowledgement_note TEXT, acknowledged_at_ms INTEGER, updated_wall_ms INTEGER,"
+        "raw_start_frequency_hz REAL, raw_end_frequency_hz REAL, stable_start_frequency_hz REAL, stable_end_frequency_hz REAL,"
+        "boundary_state INTEGER, boundary_pending_count INTEGER, boundary_required_count INTEGER, measurement_branch INTEGER)"))) {
         error = query.lastError().text().toStdString(); return false;
     }
     const QStringList migrations = {
@@ -52,7 +55,15 @@ bool AlarmHistoryStore::initializeDatabase(std::string& error)
         QStringLiteral("ALTER TABLE alarm_events ADD COLUMN source_type INTEGER"),
         QStringLiteral("ALTER TABLE alarm_events ADD COLUMN display_id TEXT"),
         QStringLiteral("ALTER TABLE alarm_events ADD COLUMN representative_signal_id INTEGER"),
-        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN original_signal_ids TEXT")};
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN original_signal_ids TEXT"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN raw_start_frequency_hz REAL"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN raw_end_frequency_hz REAL"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN stable_start_frequency_hz REAL"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN stable_end_frequency_hz REAL"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN boundary_state INTEGER"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN boundary_pending_count INTEGER"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN boundary_required_count INTEGER"),
+        QStringLiteral("ALTER TABLE alarm_events ADD COLUMN measurement_branch INTEGER")};
     for (const auto& migration : extendedMigrations) query.exec(migration);
     return true;
 }
@@ -130,8 +141,9 @@ void AlarmHistoryStore::run()
             "INSERT INTO alarm_events(event_id,generation,segment,source_type,display_id,signal_id,representative_signal_id,original_signal_ids,current_level,highest_level,state,"
             "acknowledged,first_hit_ns,last_hit_ns,triggered_ns,ended_ns,end_reason,source_name,policy_version,matched_rule_ids,matched_whitelist_ids,"
             "start_frequency_hz,end_frequency_hz,bandwidth_hz,signal_level_dbm,cnr_db,confidence,"
-            "acknowledgement_note,acknowledged_at_ms,updated_wall_ms) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "acknowledgement_note,acknowledged_at_ms,updated_wall_ms,raw_start_frequency_hz,raw_end_frequency_hz,"
+            "stable_start_frequency_hz,stable_end_frequency_hz,boundary_state,boundary_pending_count,boundary_required_count,measurement_branch) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(event_id) DO UPDATE SET current_level=excluded.current_level,"
             "highest_level=excluded.highest_level,state=excluded.state,acknowledged=excluded.acknowledged,"
             "source_type=excluded.source_type,display_id=excluded.display_id,"
@@ -142,7 +154,11 @@ void AlarmHistoryStore::run()
             "end_frequency_hz=excluded.end_frequency_hz,bandwidth_hz=excluded.bandwidth_hz,"
             "signal_level_dbm=excluded.signal_level_dbm,cnr_db=excluded.cnr_db,confidence=excluded.confidence,"
             "acknowledgement_note=excluded.acknowledgement_note,acknowledged_at_ms=excluded.acknowledged_at_ms,"
-            "updated_wall_ms=excluded.updated_wall_ms"));
+            "updated_wall_ms=excluded.updated_wall_ms,raw_start_frequency_hz=excluded.raw_start_frequency_hz,"
+            "raw_end_frequency_hz=excluded.raw_end_frequency_hz,stable_start_frequency_hz=excluded.stable_start_frequency_hz,"
+            "stable_end_frequency_hz=excluded.stable_end_frequency_hz,boundary_state=excluded.boundary_state,"
+            "boundary_pending_count=excluded.boundary_pending_count,boundary_required_count=excluded.boundary_required_count,"
+            "measurement_branch=excluded.measurement_branch"));
         const auto& event = change.event;
         QStringList ids; for (const auto id : event.matchedRuleIds) ids << QString::number(id);
         QStringList originalIds; for (const auto id : event.originalSignalIds) originalIds << QString::number(id);
@@ -169,6 +185,12 @@ void AlarmHistoryStore::run()
         query.addBindValue(event.cnrDb); query.addBindValue(event.confidence);
         query.addBindValue(QString::fromStdString(event.acknowledgementNote));
         query.addBindValue(event.acknowledgedAtMs); query.addBindValue(change.wallClockMs);
+        query.addBindValue(event.rawStartFrequencyHz); query.addBindValue(event.rawEndFrequencyHz);
+        query.addBindValue(event.stableStartFrequencyHz); query.addBindValue(event.stableEndFrequencyHz);
+        query.addBindValue(event.hasBoundaryMetadata
+            ? QVariant(static_cast<int>(event.boundaryState)) : QVariant());
+        query.addBindValue(event.pendingBoundaryCount); query.addBindValue(event.requiredBoundaryCount);
+        query.addBindValue(static_cast<int>(event.measurementBranch));
         if (!query.exec()) {
             std::lock_guard<std::mutex> lock(m_mutex); m_error = query.lastError().text().toStdString();
         }
@@ -191,7 +213,9 @@ bool AlarmHistoryStore::loadEvents(std::vector<AlarmEvent>& events, std::string&
             "SELECT event_id,generation,segment,source_type,display_id,signal_id,representative_signal_id,original_signal_ids,"
             "current_level,highest_level,state,acknowledged,first_hit_ns,last_hit_ns,triggered_ns,ended_ns,end_reason,source_name,policy_version,matched_rule_ids,matched_whitelist_ids,"
         "start_frequency_hz,end_frequency_hz,bandwidth_hz,signal_level_dbm,cnr_db,confidence,"
-        "acknowledgement_note,acknowledged_at_ms FROM alarm_events ORDER BY updated_wall_ms DESC"))) {
+        "acknowledgement_note,acknowledged_at_ms,raw_start_frequency_hz,raw_end_frequency_hz,"
+        "stable_start_frequency_hz,stable_end_frequency_hz,boundary_state,boundary_pending_count,"
+        "boundary_required_count,measurement_branch FROM alarm_events ORDER BY updated_wall_ms DESC"))) {
         error = query.lastError().text().toStdString();
         db.close(); QSqlDatabase::removeDatabase(name); return false;
     }
@@ -229,6 +253,17 @@ bool AlarmHistoryStore::loadEvents(std::vector<AlarmEvent>& events, std::string&
         event.confidence = query.value(26).toFloat();
         event.acknowledgementNote = query.value(27).toString().toStdString();
         event.acknowledgedAtMs = query.value(28).toLongLong();
+        event.rawStartFrequencyHz = query.value(29).toDouble();
+        event.rawEndFrequencyHz = query.value(30).toDouble();
+        event.stableStartFrequencyHz = query.value(31).toDouble();
+        event.stableEndFrequencyHz = query.value(32).toDouble();
+        event.hasBoundaryMetadata = !query.value(33).isNull();
+        event.boundaryState = event.hasBoundaryMetadata
+            ? static_cast<algorithm::BoundaryState>(query.value(33).toInt())
+            : algorithm::BoundaryState::Disabled;
+        event.pendingBoundaryCount = query.value(34).toUInt();
+        event.requiredBoundaryCount = query.value(35).toUInt();
+        event.measurementBranch = static_cast<algorithm::SpectrumBranch>(query.value(36).toInt());
         events.push_back(std::move(event));
     }
     db.close();

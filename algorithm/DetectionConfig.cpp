@@ -1,4 +1,5 @@
 #include "DetectionConfig.h"
+#include "common/Frequency.h"
 #include <cmath>
 #include <tuple>
 
@@ -18,13 +19,16 @@ bool validateConfig(const DetectionConfig& c, std::string& error)
     else if (!unit(c.detector.nmsIou)) error = "NMS IoU must be in (0,1].";
     else if (!c.detector.topK || c.detector.topK > 8192 || !c.detector.maxCandidatesPerWindow || c.detector.maxCandidatesPerWindow > c.detector.topK) error = "Invalid TopK or per-window candidate limit.";
     else if (!std::isfinite(c.refine.cnrThresholdDb)) error = "CNR threshold must be finite.";
-    else if (!unit(c.fusion.iou) || !unit(c.fusion.overlapRatio) || !std::isfinite(c.fusion.gapHz) || c.fusion.gapHz < 0) error = "Invalid fusion thresholds.";
+    else if (!unit(c.fusion.iou) || !unit(c.fusion.overlapRatio) || c.fusion.gapHz < 0) error = "Invalid fusion thresholds.";
     else if (!unit(c.tracker.overlapRatio) || !std::isfinite(c.tracker.maxMissSeconds) || c.tracker.maxMissSeconds < 0 || c.tracker.maxMissSeconds > 3600 ||
              !std::isfinite(c.tracker.maxBandwidthRatio) || c.tracker.maxBandwidthRatio < 1.0 || c.tracker.maxBandwidthRatio > 100.0 ||
              !std::isfinite(c.tracker.centerDistanceRatio) || c.tracker.centerDistanceRatio <= 0.0 || c.tracker.centerDistanceRatio > 10.0 ||
              c.tracker.medianWindow == 0 || c.tracker.medianWindow > 31 ||
              !std::isfinite(c.tracker.smoothingAlpha) || c.tracker.smoothingAlpha <= 0.0 || c.tracker.smoothingAlpha > 1.0 ||
-             c.tracker.jumpConfirmationCount < 2 || c.tracker.jumpConfirmationCount > 20) error = "Invalid tracker thresholds.";
+             c.tracker.jumpConfirmationCount < 2 || c.tracker.jumpConfirmationCount > 20 ||
+             !std::isfinite(c.tracker.jumpEdgeChangeRatio) || c.tracker.jumpEdgeChangeRatio <= 0.0 || c.tracker.jumpEdgeChangeRatio > 10.0 ||
+             !std::isfinite(c.tracker.jumpCenterToleranceRatio) || c.tracker.jumpCenterToleranceRatio <= 0.0 || c.tracker.jumpCenterToleranceRatio > 10.0 ||
+             !std::isfinite(c.tracker.jumpBandwidthToleranceRatio) || c.tracker.jumpBandwidthToleranceRatio < 1.0 || c.tracker.jumpBandwidthToleranceRatio > 10.0) error = "Invalid tracker thresholds.";
     return error.empty();
 }
 
@@ -36,7 +40,9 @@ bool sameConfig(const DetectionConfig& a, const DetectionConfig& b)
             c.detector.nmsIou, c.detector.topK, c.detector.maxCandidatesPerWindow, c.refine.cnrThresholdDb,
             c.fusion.iou, c.fusion.overlapRatio, c.fusion.gapHz, c.tracker.overlapRatio, c.tracker.maxMissSeconds,
             c.tracker.boundaryStabilityEnabled, c.tracker.maxBandwidthRatio, c.tracker.centerDistanceRatio,
-            c.tracker.medianWindow, c.tracker.smoothingAlpha, c.tracker.jumpConfirmationCount);
+            c.tracker.medianWindow, c.tracker.smoothingAlpha, c.tracker.jumpConfirmationCount,
+            c.tracker.jumpEdgeChangeRatio, c.tracker.jumpCenterToleranceRatio,
+            c.tracker.jumpBandwidthToleranceRatio);
     };
     return values(a) == values(b);
 }
@@ -54,7 +60,10 @@ ConfigApplyResult classifyConfigChange(const DetectionConfig& a, const Detection
         a.tracker.centerDistanceRatio != b.tracker.centerDistanceRatio ||
         a.tracker.medianWindow != b.tracker.medianWindow ||
         a.tracker.smoothingAlpha != b.tracker.smoothingAlpha ||
-        a.tracker.jumpConfirmationCount != b.tracker.jumpConfirmationCount)
+        a.tracker.jumpConfirmationCount != b.tracker.jumpConfirmationCount ||
+        a.tracker.jumpEdgeChangeRatio != b.tracker.jumpEdgeChangeRatio ||
+        a.tracker.jumpCenterToleranceRatio != b.tracker.jumpCenterToleranceRatio ||
+        a.tracker.jumpBandwidthToleranceRatio != b.tracker.jumpBandwidthToleranceRatio)
         return ConfigApplyResult::RequiresReset;
     return ConfigApplyResult::Applied;
 }

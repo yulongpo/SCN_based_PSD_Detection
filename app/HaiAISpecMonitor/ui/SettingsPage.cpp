@@ -155,7 +155,7 @@ public:
     {
         auto* editor = new FrequencySpinBox(parent);
         editor->setRange(0.0, 6.4e9);
-        editor->setDecimals(6);
+        editor->setDecimals(0);
         editor->setMinimumWidth(150);
         auto* delegate = const_cast<FrequencyItemDelegate*>(this);
         connect(editor, &QDoubleSpinBox::editingFinished, delegate, [delegate, editor] {
@@ -169,9 +169,9 @@ public:
     {
         auto* frequencyEditor = dynamic_cast<FrequencySpinBox*>(editor);
         if (!frequencyEditor) return;
-        double value = 0.0;
+        std::int64_t value = 0;
         if (FrequencySpinBox::parseFrequencyText(index.data(Qt::EditRole).toString(), value))
-            frequencyEditor->setValue(value);
+            frequencyEditor->setFrequencyHz(value);
     }
 
     void setModelData(QWidget* editor, QAbstractItemModel* model,
@@ -180,7 +180,7 @@ public:
         auto* frequencyEditor = dynamic_cast<FrequencySpinBox*>(editor);
         if (!frequencyEditor) return;
         frequencyEditor->interpretText();
-        model->setData(index, FrequencySpinBox::formatFrequency(frequencyEditor->value()),
+        model->setData(index, FrequencySpinBox::formatFrequency(frequencyEditor->frequencyHz()),
                        Qt::EditRole);
     }
 };
@@ -400,11 +400,54 @@ QWidget* SettingsPage::buildDetectionPage()
     m_fusionOverlap = decimal(QStringLiteral("融合重叠率"), 0.0001, 1.0);
     m_fusionGap = new FrequencySpinBox(card);
     m_fusionGap->setRange(0.0, 6.4e9);
-    m_fusionGap->setDecimals(6);
+    m_fusionGap->setDecimals(0);
     m_fusionGap->setMinimumWidth(150);
     form->addRow(QStringLiteral("融合间隔"), m_fusionGap);
     m_trackOverlap = decimal(QStringLiteral("跟踪重叠率"), 0.0001, 1.0);
     m_maxMiss = decimal(QStringLiteral("最大漏检时间（秒）"), 0.0, 3600.0);
+    auto* boundaryGroup = new QGroupBox(QStringLiteral("跟踪与边界稳定"), card);
+    auto* boundaryForm = new QFormLayout(boundaryGroup);
+    m_boundaryStability = new QCheckBox(QStringLiteral("启用短窗口边界稳定与突变确认"), boundaryGroup);
+    boundaryForm->addRow(QStringLiteral("稳定功能"), m_boundaryStability);
+    const auto boundaryDecimal = [boundaryGroup, boundaryForm](const QString& label,
+                                                                 double minimum, double maximum,
+                                                                 int decimals, double step) {
+        auto* value = new QDoubleSpinBox(boundaryGroup);
+        value->setRange(minimum, maximum);
+        value->setDecimals(decimals);
+        value->setSingleStep(step);
+        boundaryForm->addRow(label, value);
+        return value;
+    };
+    m_trackMaxBandwidthRatio = boundaryDecimal(QStringLiteral("最大带宽比"), 1.0, 100.0, 2, 0.1);
+    m_trackCenterDistanceRatio = boundaryDecimal(QStringLiteral("中心距离比例"), 0.001, 10.0, 3, 0.05);
+    m_trackMedianWindow = new QSpinBox(boundaryGroup);
+    m_trackMedianWindow->setRange(1, 31);
+    boundaryForm->addRow(QStringLiteral("中位数历史窗口"), m_trackMedianWindow);
+    m_trackSmoothingAlpha = boundaryDecimal(QStringLiteral("EMA 平滑系数 α"), 0.001, 1.0, 3, 0.05);
+    m_trackJumpConfirmations = new QSpinBox(boundaryGroup);
+    m_trackJumpConfirmations->setRange(2, 20);
+    boundaryForm->addRow(QStringLiteral("突变确认次数"), m_trackJumpConfirmations);
+    boundaryGroup->setToolTip(QStringLiteral(
+        "正常观测经短窗口中位数与 EMA 稳定；大幅边界变化需连续确认。确认期间仍保留原稳定频段。"));
+    form->addRow(boundaryGroup);
+    auto* advancedGroup = new QGroupBox(QStringLiteral("高级：突变候选一致性容差"), card);
+    auto* advancedForm = new QFormLayout(advancedGroup);
+    const auto advancedDecimal = [advancedGroup, advancedForm](const QString& label,
+                                                                 double minimum, double maximum,
+                                                                 int decimals, double step) {
+        auto* value = new QDoubleSpinBox(advancedGroup);
+        value->setRange(minimum, maximum);
+        value->setDecimals(decimals);
+        value->setSingleStep(step);
+        advancedForm->addRow(label, value);
+        return value;
+    };
+    m_trackJumpEdgeChangeRatio = advancedDecimal(QStringLiteral("边界变化门限／轨迹带宽"), 0.001, 10.0, 3, 0.05);
+    m_trackJumpCenterToleranceRatio = advancedDecimal(QStringLiteral("候选中心容差／带宽"), 0.001, 10.0, 3, 0.02);
+    m_trackJumpBandwidthToleranceRatio = advancedDecimal(QStringLiteral("候选带宽比上限"), 1.0, 10.0, 2, 0.05);
+    advancedGroup->setToolTip(QStringLiteral("频点网格容差仍固定为 2 个 bin；以下参数控制突变边界阈值和候选一致性。"));
+    form->addRow(advancedGroup);
     m_maxSignals = integer(QStringLiteral("最大信号数"), 1, 65536);
     auto* apply = actionButton(QStringLiteral("应用 SCN 设置"), card);
     form->addRow(QString(), apply);
@@ -433,9 +476,18 @@ algorithm::DetectionConfig SettingsPage::detectionConfig() const
     c.refine.cnrThresholdDb = static_cast<float>(m_cnr->value());
     c.fusion.iou = m_fusionIou->value();
     c.fusion.overlapRatio = m_fusionOverlap->value();
-    c.fusion.gapHz = m_fusionGap->value();
+    c.fusion.gapHz = m_fusionGap->frequencyHz();
     c.tracker.overlapRatio = m_trackOverlap->value();
     c.tracker.maxMissSeconds = m_maxMiss->value();
+    c.tracker.boundaryStabilityEnabled = m_boundaryStability->isChecked();
+    c.tracker.maxBandwidthRatio = m_trackMaxBandwidthRatio->value();
+    c.tracker.centerDistanceRatio = m_trackCenterDistanceRatio->value();
+    c.tracker.medianWindow = static_cast<std::size_t>(m_trackMedianWindow->value());
+    c.tracker.smoothingAlpha = m_trackSmoothingAlpha->value();
+    c.tracker.jumpConfirmationCount = static_cast<std::size_t>(m_trackJumpConfirmations->value());
+    c.tracker.jumpEdgeChangeRatio = m_trackJumpEdgeChangeRatio->value();
+    c.tracker.jumpCenterToleranceRatio = m_trackJumpCenterToleranceRatio->value();
+    c.tracker.jumpBandwidthToleranceRatio = m_trackJumpBandwidthToleranceRatio->value();
     c.maxSignals = static_cast<std::size_t>(m_maxSignals->value());
     return c;
 }
@@ -456,9 +508,18 @@ void SettingsPage::setDetectionConfig(const algorithm::DetectionConfig& c)
     m_cnr->setValue(c.refine.cnrThresholdDb);
     m_fusionIou->setValue(c.fusion.iou);
     m_fusionOverlap->setValue(c.fusion.overlapRatio);
-    m_fusionGap->setValue(c.fusion.gapHz);
+    m_fusionGap->setFrequencyHz(c.fusion.gapHz);
     m_trackOverlap->setValue(c.tracker.overlapRatio);
     m_maxMiss->setValue(c.tracker.maxMissSeconds);
+    m_boundaryStability->setChecked(c.tracker.boundaryStabilityEnabled);
+    m_trackMaxBandwidthRatio->setValue(c.tracker.maxBandwidthRatio);
+    m_trackCenterDistanceRatio->setValue(c.tracker.centerDistanceRatio);
+    m_trackMedianWindow->setValue(static_cast<int>(c.tracker.medianWindow));
+    m_trackSmoothingAlpha->setValue(c.tracker.smoothingAlpha);
+    m_trackJumpConfirmations->setValue(static_cast<int>(c.tracker.jumpConfirmationCount));
+    m_trackJumpEdgeChangeRatio->setValue(c.tracker.jumpEdgeChangeRatio);
+    m_trackJumpCenterToleranceRatio->setValue(c.tracker.jumpCenterToleranceRatio);
+    m_trackJumpBandwidthToleranceRatio->setValue(c.tracker.jumpBandwidthToleranceRatio);
     m_maxSignals->setValue(static_cast<int>(c.maxSignals));
 }
 
@@ -481,9 +542,21 @@ void SettingsPage::loadDetectionConfig()
     c.refine.cnrThresholdDb = settings.value(QStringLiteral("cnrThresholdDb"), 3.0).toFloat();
     c.fusion.iou = settings.value(QStringLiteral("fusionIou"), 0.1).toDouble();
     c.fusion.overlapRatio = settings.value(QStringLiteral("fusionOverlapRatio"), 0.5).toDouble();
-    c.fusion.gapHz = settings.value(QStringLiteral("fusionGapHz"), 0.0).toDouble();
+    if (!FrequencySpinBox::parseStoredFrequency(
+            settings.value(QStringLiteral("fusionGapHz"), 0), c.fusion.gapHz)) {
+        c.fusion.gapHz = 0;
+    }
     c.tracker.overlapRatio = settings.value(QStringLiteral("trackOverlapRatio"), 0.45).toDouble();
     c.tracker.maxMissSeconds = settings.value(QStringLiteral("maxMissSeconds"), 1.0).toDouble();
+    c.tracker.boundaryStabilityEnabled = settings.value(QStringLiteral("boundaryStabilityEnabled"), true).toBool();
+    c.tracker.maxBandwidthRatio = settings.value(QStringLiteral("trackMaxBandwidthRatio"), 2.0).toDouble();
+    c.tracker.centerDistanceRatio = settings.value(QStringLiteral("trackCenterDistanceRatio"), 0.25).toDouble();
+    c.tracker.medianWindow = settings.value(QStringLiteral("trackMedianWindow"), 5).toULongLong();
+    c.tracker.smoothingAlpha = settings.value(QStringLiteral("trackSmoothingAlpha"), 0.35).toDouble();
+    c.tracker.jumpConfirmationCount = settings.value(QStringLiteral("trackJumpConfirmationCount"), 3).toULongLong();
+    c.tracker.jumpEdgeChangeRatio = settings.value(QStringLiteral("trackJumpEdgeChangeRatio"), 0.15).toDouble();
+    c.tracker.jumpCenterToleranceRatio = settings.value(QStringLiteral("trackJumpCenterToleranceRatio"), 0.10).toDouble();
+    c.tracker.jumpBandwidthToleranceRatio = settings.value(QStringLiteral("trackJumpBandwidthToleranceRatio"), 1.20).toDouble();
     c.maxSignals = settings.value(QStringLiteral("maxSignals"), 4096).toULongLong();
     std::string error;
     if (!algorithm::validateConfig(c, error)) {
@@ -511,9 +584,18 @@ void SettingsPage::saveDetectionConfig(const algorithm::DetectionConfig& c) cons
     settings.setValue(QStringLiteral("cnrThresholdDb"), c.refine.cnrThresholdDb);
     settings.setValue(QStringLiteral("fusionIou"), c.fusion.iou);
     settings.setValue(QStringLiteral("fusionOverlapRatio"), c.fusion.overlapRatio);
-    settings.setValue(QStringLiteral("fusionGapHz"), c.fusion.gapHz);
+    settings.setValue(QStringLiteral("fusionGapHz"), static_cast<qlonglong>(c.fusion.gapHz));
     settings.setValue(QStringLiteral("trackOverlapRatio"), c.tracker.overlapRatio);
     settings.setValue(QStringLiteral("maxMissSeconds"), c.tracker.maxMissSeconds);
+    settings.setValue(QStringLiteral("boundaryStabilityEnabled"), c.tracker.boundaryStabilityEnabled);
+    settings.setValue(QStringLiteral("trackMaxBandwidthRatio"), c.tracker.maxBandwidthRatio);
+    settings.setValue(QStringLiteral("trackCenterDistanceRatio"), c.tracker.centerDistanceRatio);
+    settings.setValue(QStringLiteral("trackMedianWindow"), static_cast<qulonglong>(c.tracker.medianWindow));
+    settings.setValue(QStringLiteral("trackSmoothingAlpha"), c.tracker.smoothingAlpha);
+    settings.setValue(QStringLiteral("trackJumpConfirmationCount"), static_cast<qulonglong>(c.tracker.jumpConfirmationCount));
+    settings.setValue(QStringLiteral("trackJumpEdgeChangeRatio"), c.tracker.jumpEdgeChangeRatio);
+    settings.setValue(QStringLiteral("trackJumpCenterToleranceRatio"), c.tracker.jumpCenterToleranceRatio);
+    settings.setValue(QStringLiteral("trackJumpBandwidthToleranceRatio"), c.tracker.jumpBandwidthToleranceRatio);
     settings.setValue(QStringLiteral("maxSignals"), static_cast<qulonglong>(c.maxSignals));
     settings.sync();
 }
@@ -839,11 +921,12 @@ policy::PolicyConfig SettingsPage::policyConfig(QString* error) const
 {
     policy::PolicyConfig config;
     config.version = static_cast<std::uint64_t>(QSettings().value(QStringLiteral("policy/version"), 1).toULongLong());
-    auto parse = [](const QTableWidget* table, int row, int column, double fallback = 0.0) {
+    auto parse = [](const QTableWidget* table, int row, int column,
+                    std::int64_t fallback = 0) -> std::int64_t {
         const auto text = table->item(row, column) ? table->item(row, column)->text() : QString();
-        double value = fallback;
+        std::int64_t value = fallback;
         return FrequencySpinBox::parseFrequencyText(text, value)
-            ? value : std::numeric_limits<double>::quiet_NaN();
+            ? value : std::numeric_limits<std::int64_t>::min();
     };
     for (int row = 0; row < m_whitelistTable->rowCount(); ++row) {
         policy::WhitelistEntry item;
@@ -864,6 +947,12 @@ policy::PolicyConfig SettingsPage::policyConfig(QString* error) const
         bool ok = false; const double value = text.toDouble(&ok);
         enabled = true; return ok ? value : std::numeric_limits<double>::quiet_NaN();
     };
+    auto parseSeconds = [](const QTableWidget* table, int row, int column) {
+        const auto text = table->item(row, column) ? table->item(row, column)->text().trimmed() : QString();
+        bool ok = false;
+        const double value = text.toDouble(&ok);
+        return ok && std::isfinite(value) ? value : std::numeric_limits<double>::quiet_NaN();
+    };
     for (int row = 0; row < m_ruleTable->rowCount(); ++row) {
         policy::AlarmRule rule;
         rule.id = m_ruleTable->item(row, 0)->data(Qt::UserRole).toLongLong();
@@ -879,8 +968,8 @@ policy::PolicyConfig SettingsPage::policyConfig(QString* error) const
         rule.level = m_ruleTable->item(row, 8)->text().contains(QStringLiteral("严重"))
             ? policy::AlarmLevel::Critical : policy::AlarmLevel::General;
         rule.consecutiveHits = static_cast<std::uint32_t>(m_ruleTable->item(row, 9)->text().toUInt());
-        rule.minDurationSeconds = parse(m_ruleTable, row, 10);
-        rule.clearDelaySeconds = parse(m_ruleTable, row, 11);
+        rule.minDurationSeconds = parseSeconds(m_ruleTable, row, 10);
+        rule.clearDelaySeconds = parseSeconds(m_ruleTable, row, 11);
         rule.enabled = policySwitchChecked(m_ruleTable, row, 12);
         config.alarmRules.push_back(std::move(rule));
     }

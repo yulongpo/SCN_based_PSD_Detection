@@ -121,18 +121,12 @@ void pauseAcrossFileLoops()
     CHECK(latest->detection.generation == epoch);
 }
 }
-// This definition is linked only into the CPU integration executable.
+// The CPU integration executable overrides only the TensorRT backend. FILE
+// source construction uses the production factory, which is safe and avoids
+// duplicating the production createSource symbol in this test binary.
 namespace scn::algorithm
 {
 std::unique_ptr<IScnBackend> createTensorRtScnBackend() { return std::make_unique<TestBackend>(); }
-}
-namespace scn::source
-{
-std::unique_ptr<ISpectrumSource> createSource(algorithm::SourceKind kind)
-{
-    if (kind != algorithm::SourceKind::File) throw std::runtime_error("Session test requested a non-FILE source.");
-    return std::make_unique<FileSource>();
-}
 }
 int main(int argc, char** argv)
 {

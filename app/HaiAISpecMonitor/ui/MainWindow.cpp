@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "FrequencySpinBox.h"
+#include "common/Frequency.h"
 #include "../../../source/FileSource/FileSource.h"
 
 #include <QAbstractButton>
@@ -544,16 +545,14 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
 
     m_centerFrequency = new FrequencySpinBox(left);
     m_centerFrequency->setRange(0.0, 6.4e9);
-    m_centerFrequency->setDecimals(6);
-    m_centerFrequency->setValue(2.4e9);
+    m_centerFrequency->setFrequencyHz(2400000000LL);
     m_centerFrequency->setMinimumWidth(150);
     m_centerGroup = parameterGroup(QStringLiteral("中心频率"), m_centerFrequency);
     configGrid->addWidget(m_centerGroup, 0, 2, 1, 2);
 
     m_bandwidth = new FrequencySpinBox(left);
     m_bandwidth->setRange(20.0, 6.4e9);
-    m_bandwidth->setDecimals(6);
-    m_bandwidth->setValue(100.0e6);
+    m_bandwidth->setFrequencyHz(100000000LL);
     m_bandwidth->setMinimumWidth(150);
     m_bandwidthGroup = parameterGroup(QStringLiteral("扫宽"), m_bandwidth);
     configGrid->addWidget(m_bandwidthGroup, 0, 4, 1, 2);
@@ -582,9 +581,8 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_fileSourceGroup->setVisible(false);
 
     m_resolutionBandwidth = new FrequencySpinBox(left);
-    m_resolutionBandwidth->setRange(0.602006912, 10.1e6);
-    m_resolutionBandwidth->setDecimals(6);
-    m_resolutionBandwidth->setValue(50.0e3);
+    m_resolutionBandwidth->setRange(1.0, 10.1e6);
+    m_resolutionBandwidth->setFrequencyHz(50000LL);
     m_resolutionBandwidth->setMinimumWidth(130);
     m_resolutionBandwidthGroup = parameterGroup(QStringLiteral("带宽分辨率"), m_resolutionBandwidth);
     configGrid->addWidget(m_resolutionBandwidthGroup, 0, 6, 1, 2);
@@ -593,16 +591,14 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     // These controls use Hz internally and accept an explicit unit suffix.
     m_startFrequency = new FrequencySpinBox(left);
     m_startFrequency->setRange(0.0, 6.4e9);
-    m_startFrequency->setDecimals(6);
-    m_startFrequency->setValue(2.35e9);
+    m_startFrequency->setFrequencyHz(2350000000LL);
     m_startFrequency->setMinimumWidth(150);
     auto* startGroup = parameterGroup(QStringLiteral("起始频率"), m_startFrequency);
     configGrid->addWidget(startGroup, 1, 0, 1, 2);
 
     m_endFrequency = new FrequencySpinBox(left);
     m_endFrequency->setRange(0.0, 6.4e9);
-    m_endFrequency->setDecimals(6);
-    m_endFrequency->setValue(2.45e9);
+    m_endFrequency->setFrequencyHz(2450000000LL);
     m_endFrequency->setMinimumWidth(150);
     auto* endGroup = parameterGroup(QStringLiteral("终止频率"), m_endFrequency);
     configGrid->addWidget(endGroup, 1, 2, 1, 2);
@@ -755,19 +751,21 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     const auto syncFromCenterSpan = [this](double) {
         if (m_updatingFrequency) return;
         m_updatingFrequency = true;
-        const double centerHz = m_centerFrequency->value();
-        const double spanHz = m_bandwidth->value();
-        m_startFrequency->setValue(centerHz - spanHz / 2.0);
-        m_endFrequency->setValue(centerHz + spanHz / 2.0);
+        const auto centerHz = m_centerFrequency->frequencyHz();
+        const auto spanHz = m_bandwidth->frequencyHz();
+        const auto startHz = centerHz - spanHz / 2;
+        m_startFrequency->setFrequencyHz(startHz);
+        m_endFrequency->setFrequencyHz(startHz + spanHz);
         m_updatingFrequency = false;
     };
     const auto syncFromStartEnd = [this](double) {
         if (m_updatingFrequency) return;
         m_updatingFrequency = true;
-        const double startHz = m_startFrequency->value();
-        const double endHz = m_endFrequency->value();
-        m_centerFrequency->setValue((startHz + endHz) / 2.0);
-        m_bandwidth->setValue(std::max(20.0, endHz - startHz));
+        const auto startHz = m_startFrequency->frequencyHz();
+        const auto endHz = m_endFrequency->frequencyHz();
+        const auto spanHz = endHz - startHz;
+        m_centerFrequency->setFrequencyHz(startHz + spanHz / 2);
+        m_bandwidth->setFrequencyHz(std::max<std::int64_t>(20, spanHz));
         m_updatingFrequency = false;
     };
     connect(m_centerFrequency, &QDoubleSpinBox::valueChanged, this, syncFromCenterSpan);
@@ -798,8 +796,8 @@ void MainWindow::buildSignalTable(QWidget* parent)
     layout->addWidget(m_detectionStatusLabel);
     m_signalTable = new QTableWidget(0, 7, panel);
     m_signalTable->setObjectName(QStringLiteral("isaTable"));
-    m_signalTable->setHorizontalHeaderLabels({QStringLiteral("ID"), QStringLiteral("中心频率(MHz)"),
-        QStringLiteral("带宽(kHz)"), QStringLiteral("信号类型"), QStringLiteral("告警等级"),
+    m_signalTable->setHorizontalHeaderLabels({QStringLiteral("ID"), QStringLiteral("中心频率"),
+        QStringLiteral("带宽"), QStringLiteral("信号类型"), QStringLiteral("告警等级"),
         QStringLiteral("最近出现时间"), QStringLiteral("出现次数")});
     m_signalTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_signalTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -833,15 +831,16 @@ source::SourceConfig MainWindow::currentConfig() const
     config.kind = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt());
     config.filePath = m_filePath->text().trimmed().toStdString();
     if (config.kind == algorithm::SourceKind::File) {
-        const double startHz = m_startFrequency->value();
-        const double endHz = m_endFrequency->value();
-        config.centerFrequencyHz = (startHz + endHz) / 2.0;
+        const auto startHz = m_startFrequency->frequencyHz();
+        const auto endHz = m_endFrequency->frequencyHz();
+        const auto spanHz = endHz - startHz;
+        config.centerFrequencyHz = startHz + spanHz / 2;
         config.bandwidthHz = endHz - startHz;
     } else {
-        config.centerFrequencyHz = m_centerFrequency->value();
-        config.bandwidthHz = std::max(20.0, m_bandwidth->value());
+        config.centerFrequencyHz = m_centerFrequency->frequencyHz();
+        config.bandwidthHz = std::max<std::int64_t>(20, m_bandwidth->frequencyHz());
     }
-    config.resolutionBandwidthHz = m_resolutionBandwidth->value();
+    config.resolutionBandwidthHz = m_resolutionBandwidth->frequencyHz();
     config.referenceLevelDbm = m_referenceLevel->value();
     config.rbwShape = static_cast<source::RbwShape>(m_rbwShape->currentData().toInt());
     config.pointCount = static_cast<std::size_t>(m_pointCount->value());
@@ -863,14 +862,8 @@ application::RecordingConfig MainWindow::recordingConfig() const
 
 QString MainWindow::formatFrequency(double hz, int decimals) const
 {
-    const double absHz = std::abs(hz);
-    if (absHz >= 1e9)
-        return QStringLiteral("%1 GHz").arg(hz / 1e9, 0, 'f', decimals);
-    if (absHz >= 1e6)
-        return QStringLiteral("%1 MHz").arg(hz / 1e6, 0, 'f', decimals);
-    if (absHz >= 1e3)
-        return QStringLiteral("%1 kHz").arg(hz / 1e3, 0, 'f', decimals);
-    return QStringLiteral("%1 Hz").arg(hz, 0, 'f', decimals);
+    Q_UNUSED(decimals)
+    return FrequencySpinBox::formatFrequency(hz);
 }
 
 bool MainWindow::validateConfiguration(const source::SourceConfig& config, QString& error) const
@@ -880,29 +873,29 @@ bool MainWindow::validateConfiguration(const source::SourceConfig& config, QStri
             error = QStringLiteral("请选择频谱文件。");
             return false;
         }
-        if (!std::isfinite(config.centerFrequencyHz) ||
-            !std::isfinite(config.bandwidthHz) || config.bandwidthHz <= 0.0) {
+        if (config.bandwidthHz <= 0) {
             error = QStringLiteral("文件源的起始频率必须小于终止频率。");
             return false;
         }
         return true;
     }
 
-    const double startHz = config.centerFrequencyHz - config.bandwidthHz / 2.0;
-    const double endHz = config.centerFrequencyHz + config.bandwidthHz / 2.0;
+    const double startHz = static_cast<double>(config.centerFrequencyHz) -
+        static_cast<double>(config.bandwidthHz) / 2.0;
+    const double endHz = static_cast<double>(config.centerFrequencyHz) +
+        static_cast<double>(config.bandwidthHz) / 2.0;
     if (!std::isfinite(startHz) || !std::isfinite(endHz) ||
         startHz < 9.0e3 || endHz > 6.0e9 || endHz <= startHz) {
         error = QStringLiteral("起止频率必须位于 9 kHz 至 6 GHz 范围内。");
         return false;
     }
-    if (config.bandwidthHz < 20.0) {
+    if (config.bandwidthHz < 20) {
         error = QStringLiteral("扫宽不能小于 20 Hz。");
         return false;
     }
-    if (!std::isfinite(config.resolutionBandwidthHz) ||
-        config.resolutionBandwidthHz < 0.602006912 ||
+    if (config.resolutionBandwidthHz < 1 ||
         config.resolutionBandwidthHz > 10.1e6) {
-        error = QStringLiteral("RBW 必须位于 0.602006912 Hz 至 10.1 MHz 范围内。");
+        error = QStringLiteral("RBW 必须位于 1 Hz 至 10.1 MHz 范围内。");
         return false;
     }
     if (!std::isfinite(config.referenceLevelDbm) || config.referenceLevelDbm > 20.0) {
@@ -948,17 +941,16 @@ void MainWindow::applyFileMetadata(const QString& path)
 
     if (metadata.hasCenterFrequency && metadata.hasBandwidth) {
         m_updatingFrequency = true;
-        const double startHz = metadata.centerFrequencyHz - metadata.bandwidthHz / 2.0;
-        const double endHz = metadata.centerFrequencyHz + metadata.bandwidthHz / 2.0;
-        m_startFrequency->setValue(startHz);
-        m_endFrequency->setValue(endHz);
-        m_centerFrequency->setValue(metadata.centerFrequencyHz);
-        m_bandwidth->setValue(metadata.bandwidthHz);
+        const auto startHz = metadata.centerFrequencyHz - metadata.bandwidthHz / 2;
+        m_startFrequency->setFrequencyHz(startHz);
+        m_endFrequency->setFrequencyHz(startHz + metadata.bandwidthHz);
+        m_centerFrequency->setFrequencyHz(metadata.centerFrequencyHz);
+        m_bandwidth->setFrequencyHz(metadata.bandwidthHz);
         m_updatingFrequency = false;
         m_fileFrequencyMetadataLocked = true;
     }
     if (metadata.hasResolutionBandwidth) {
-        m_resolutionBandwidth->setValue(metadata.resolutionBandwidthHz);
+        m_resolutionBandwidth->setFrequencyHz(metadata.resolutionBandwidthHz);
         m_fileRbwMetadataLocked = true;
     }
     if (metadata.hasReferenceLevel) {
@@ -1094,8 +1086,8 @@ void MainWindow::updateDisplayDomain()
         !m_referenceLevel) {
         return;
     }
-    const double startHz = m_startFrequency->value();
-    const double endHz = m_endFrequency->value();
+    const double startHz = static_cast<double>(m_startFrequency->frequencyHz());
+    const double endHz = static_cast<double>(m_endFrequency->frequencyHz());
     const double referenceLevelDbm = m_referenceLevel->value();
     if (!std::isfinite(startHz) || !std::isfinite(endHz) || !(endHz > startHz)) {
         return;
@@ -1112,8 +1104,8 @@ void MainWindow::updateDisplayDomain()
 void MainWindow::syncFrequencyNavigator()
 {
     if (!m_frequencyNavigator || !m_spectrum || !m_waterfall) return;
-    double startHz = m_startFrequency ? m_startFrequency->value() : 0.0;
-    double endHz = m_endFrequency ? m_endFrequency->value() : 0.0;
+    double startHz = m_startFrequency ? static_cast<double>(m_startFrequency->frequencyHz()) : 0.0;
+    double endHz = m_endFrequency ? static_cast<double>(m_endFrequency->frequencyHz()) : 0.0;
     if (m_displaySnapshot && m_displaySnapshot->frame.isValid()) {
         startHz = m_displaySnapshot->frame.startFrequencyHz;
         endHz = m_displaySnapshot->frame.endFrequencyHz();
@@ -1147,26 +1139,34 @@ void MainWindow::loadUiState()
                                        defaultSpectrumFilePath()).toString());
     const auto readFrequency = [&settings](const QString& hzKey,
                                             const QString& legacyKey,
-                                            double fallback,
-                                            double legacyScale) {
-        if (settings.contains(hzKey)) return settings.value(hzKey).toDouble();
-        return settings.value(legacyKey, fallback / legacyScale).toDouble() * legacyScale;
+                                            std::int64_t fallback,
+                                            double legacyScale) -> std::int64_t {
+        std::int64_t exactHz = fallback;
+        if (settings.contains(hzKey)) {
+            return FrequencySpinBox::parseStoredFrequency(settings.value(hzKey), exactHz)
+                ? exactHz : fallback;
+        }
+
+        const QVariant legacyValue = settings.value(
+            legacyKey, static_cast<double>(fallback) / legacyScale);
+        const double legacyHz = legacyValue.toDouble() * legacyScale;
+        return scn::common::toIntegerHz(legacyHz, exactHz) ? exactHz : fallback;
     };
-    m_centerFrequency->setValue(readFrequency(QStringLiteral("source/centerFrequencyHz"),
+    m_centerFrequency->setFrequencyHz(readFrequency(QStringLiteral("source/centerFrequencyHz"),
                                                QStringLiteral("source/centerFrequencyGHz"),
-                                               m_centerFrequency->value(), 1.0e9));
-    m_bandwidth->setValue(readFrequency(QStringLiteral("source/bandwidthHz"),
+                                               m_centerFrequency->frequencyHz(), 1.0e9));
+    m_bandwidth->setFrequencyHz(readFrequency(QStringLiteral("source/bandwidthHz"),
                                         QStringLiteral("source/bandwidthGHz"),
-                                        m_bandwidth->value(), 1.0e9));
-    m_startFrequency->setValue(readFrequency(QStringLiteral("source/startFrequencyHz"),
+                                        m_bandwidth->frequencyHz(), 1.0e9));
+    m_startFrequency->setFrequencyHz(readFrequency(QStringLiteral("source/startFrequencyHz"),
                                              QStringLiteral("source/startFrequencyGHz"),
-                                             m_startFrequency->value(), 1.0e9));
-    m_endFrequency->setValue(readFrequency(QStringLiteral("source/endFrequencyHz"),
+                                             m_startFrequency->frequencyHz(), 1.0e9));
+    m_endFrequency->setFrequencyHz(readFrequency(QStringLiteral("source/endFrequencyHz"),
                                            QStringLiteral("source/endFrequencyGHz"),
-                                           m_endFrequency->value(), 1.0e9));
-    m_resolutionBandwidth->setValue(readFrequency(QStringLiteral("source/resolutionBandwidthHz"),
+                                           m_endFrequency->frequencyHz(), 1.0e9));
+    m_resolutionBandwidth->setFrequencyHz(readFrequency(QStringLiteral("source/resolutionBandwidthHz"),
                                                   QStringLiteral("source/resolutionBandwidthKHz"),
-                                                  m_resolutionBandwidth->value(), 1.0e3));
+                                                  m_resolutionBandwidth->frequencyHz(), 1.0e3));
     m_referenceLevel->setValue(settings.value(QStringLiteral("source/referenceLevelDbm"),
                                               m_referenceLevel->value()).toDouble());
     const int savedRbwShape = settings.value(QStringLiteral("source/rbwShape"),
@@ -1225,11 +1225,16 @@ void MainWindow::saveUiState() const
     const int sourceKind = m_sourceCombo->currentData().toInt();
     settings.setValue(QStringLiteral("source/kind"), sourceKind);
     settings.setValue(QStringLiteral("source/filePath"), m_filePath->text());
-    settings.setValue(QStringLiteral("source/centerFrequencyHz"), m_centerFrequency->value());
-    settings.setValue(QStringLiteral("source/bandwidthHz"), m_bandwidth->value());
-    settings.setValue(QStringLiteral("source/startFrequencyHz"), m_startFrequency->value());
-    settings.setValue(QStringLiteral("source/endFrequencyHz"), m_endFrequency->value());
-    settings.setValue(QStringLiteral("source/resolutionBandwidthHz"), m_resolutionBandwidth->value());
+    settings.setValue(QStringLiteral("source/centerFrequencyHz"),
+                      static_cast<qlonglong>(m_centerFrequency->frequencyHz()));
+    settings.setValue(QStringLiteral("source/bandwidthHz"),
+                      static_cast<qlonglong>(m_bandwidth->frequencyHz()));
+    settings.setValue(QStringLiteral("source/startFrequencyHz"),
+                      static_cast<qlonglong>(m_startFrequency->frequencyHz()));
+    settings.setValue(QStringLiteral("source/endFrequencyHz"),
+                      static_cast<qlonglong>(m_endFrequency->frequencyHz()));
+    settings.setValue(QStringLiteral("source/resolutionBandwidthHz"),
+                      static_cast<qlonglong>(m_resolutionBandwidth->frequencyHz()));
     settings.setValue(QStringLiteral("source/referenceLevelDbm"), m_referenceLevel->value());
     settings.setValue(QStringLiteral("source/rbwShape"), m_rbwShape->currentData().toInt());
     settings.setValue(QStringLiteral("source/pointCount"), m_pointCount->value());
@@ -1464,8 +1469,12 @@ void MainWindow::onRecordingStatus(const QString& path, double startFrequencyHz,
     if (!path.isEmpty()) {
         const auto sourceName = m_sourceCombo ? m_sourceCombo->currentText()
                                                : QStringLiteral("LIVE");
-        m_playbackPage->rememberFile(path, sourceName, startFrequencyHz, endFrequencyHz,
-                                     resolutionBandwidthHz, 0, 0);
+        std::int64_t startHz = 0, endHz = 0, rbwHz = 0;
+        if (scn::common::toIntegerHz(startFrequencyHz, startHz) &&
+            scn::common::toIntegerHz(endFrequencyHz, endHz) &&
+            scn::common::toIntegerHz(resolutionBandwidthHz, rbwHz)) {
+            m_playbackPage->rememberFile(path, sourceName, startHz, endHz, rbwHz, 0, 0);
+        }
     }
     if (!active && !path.isEmpty()) {
         statusBar()->showMessage(QStringLiteral("实时频谱录制完成：%1（%2帧）")
@@ -1549,7 +1558,7 @@ void MainWindow::refreshDisplay()
         if (fileSource) {
             m_statusStrip->setMenuInfo((snapshot->frame.startFrequencyHz + endFrequencyHz) / 2.0,
                                        endFrequencyHz - snapshot->frame.startFrequencyHz,
-                                       m_resolutionBandwidth->value());
+                                       static_cast<double>(m_resolutionBandwidth->frequencyHz()));
         } else {
             m_statusStrip->setMenuInfoVisible(false);
         }
@@ -1582,9 +1591,13 @@ void MainWindow::refreshDisplay()
             if (fileSource) {
                 const double endFrequencyHz = current.frame.startFrequencyHz +
                     current.frame.binWidthHz * static_cast<double>(current.frame.powerDb.size());
-                m_playbackPage->rememberFile(m_filePath->text(), m_sourceCombo->currentText(),
-                    current.frame.startFrequencyHz, endFrequencyHz, m_resolutionBandwidth->value(),
-                    hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0, 0);
+                std::int64_t startHz = 0, endHz = 0;
+                if (scn::common::toIntegerHz(current.frame.startFrequencyHz, startHz) &&
+                    scn::common::toIntegerHz(endFrequencyHz, endHz)) {
+                    m_playbackPage->rememberFile(m_filePath->text(), m_sourceCombo->currentText(),
+                        startHz, endHz, m_resolutionBandwidth->frequencyHz(),
+                        hasDetectionObservations(data) ? static_cast<int>(data.detections.size()) : 0, 0);
+                }
                 updatePlaybackResultSignals(current);
             }
         }
@@ -1700,7 +1713,7 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
 {
     const auto& signal = businessSignal.measurement;
     QString branch;
-    switch (signal.branch) {
+    switch (businessSignal.measurementBranch) {
     case algorithm::SpectrumBranch::Average: branch = QStringLiteral("平均谱（Average）"); break;
     case algorithm::SpectrumBranch::Maximum: branch = QStringLiteral("最大谱（Maximum）"); break;
     case algorithm::SpectrumBranch::Both: branch = QStringLiteral("双分支融合（Both）"); break;
@@ -1709,10 +1722,10 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
         QStringLiteral("信号 ID：%1").arg(QString::fromStdString(businessSignal.displayId)),
         QStringLiteral("结果来源：%1").arg(businessSignal.source == policy::PolicySignalSource::Whitelist
             ? QStringLiteral("白名单替换") : QStringLiteral("SCN 原始检测")),
-        QStringLiteral("起始频率：%1 Hz").arg(signal.startFrequencyHz, 0, 'f', 3),
-        QStringLiteral("终止频率：%1 Hz").arg(signal.endFrequencyHz, 0, 'f', 3),
-        QStringLiteral("中心频率：%1 Hz").arg(signal.centerFrequencyHz, 0, 'f', 3),
-        QStringLiteral("带宽：%1 Hz").arg(signal.bandwidthHz, 0, 'f', 3),
+        QStringLiteral("起始频率：%1").arg(formatFrequency(signal.startFrequencyHz)),
+        QStringLiteral("终止频率：%1").arg(formatFrequency(signal.endFrequencyHz)),
+        QStringLiteral("中心频率：%1").arg(formatFrequency(signal.centerFrequencyHz)),
+        QStringLiteral("带宽：%1").arg(formatFrequency(signal.bandwidthHz)),
         QStringLiteral("置信度：%1").arg(signal.confidence, 0, 'f', 6),
         QStringLiteral("CNR（snrDb）：%1 dB").arg(signal.snrDb, 0, 'f', 3),
         QStringLiteral("信号电平：%1 dBm").arg(signal.signalLevelDbm, 0, 'f', 3),
@@ -1725,10 +1738,37 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
         QStringLiteral("信号类型：未分类"),
         fileSource ? QStringLiteral("回放时间由文件帧位置与帧率生成，与实际播放速度无关。")
                    : QStringLiteral("硬件时间相对本轮首个显示帧；负值表示更早的观测，不是日历时间。")};
+    if (businessSignal.hasBoundaryMetadata) {
+        const auto& stable = businessSignal.stableMeasurement;
+        details << QStringLiteral("原始检测频段：%1 ~ %2")
+            .arg(formatFrequency(businessSignal.rawMeasurement.startFrequencyHz),
+                 formatFrequency(businessSignal.rawMeasurement.endFrequencyHz));
+        details << QStringLiteral("稳定业务频段：%1 ~ %2")
+            .arg(formatFrequency(stable.startFrequencyHz), formatFrequency(stable.endFrequencyHz));
+        details << QStringLiteral("稳定重测：信号 %1 dBm，噪声 %2 dBm，CNR %3 dB；测量分支：%4")
+            .arg(stable.signalLevelDbm, 0, 'f', 3)
+            .arg(stable.noiseLevelDbm, 0, 'f', 3)
+            .arg(stable.snrDb, 0, 'f', 3)
+            .arg(branch);
+        QString boundaryState;
+        switch (businessSignal.boundaryState) {
+        case algorithm::BoundaryState::Stable: boundaryState = QStringLiteral("稳定"); break;
+        case algorithm::BoundaryState::PendingChange:
+            boundaryState = QStringLiteral("边界变化待确认 %1/%2")
+                .arg(businessSignal.pendingBoundaryCount).arg(businessSignal.requiredBoundaryCount); break;
+        case algorithm::BoundaryState::Ambiguous: boundaryState = QStringLiteral("关联歧义，新建身份"); break;
+        case algorithm::BoundaryState::Disabled: boundaryState = QStringLiteral("稳定功能关闭"); break;
+        }
+        details << QStringLiteral("边界状态：%1").arg(boundaryState);
+        details << QStringLiteral("关联诊断：IoU %1，中心距离 %2，带宽比 %3；%4")
+            .arg(businessSignal.associationIou, 0, 'f', 4)
+            .arg(formatFrequency(businessSignal.associationCenterDistanceHz))
+            .arg(businessSignal.associationBandwidthRatio, 0, 'f', 3)
+            .arg(QString::fromStdString(businessSignal.boundaryDiagnostic));
+    }
     if (businessSignal.source == policy::PolicySignalSource::Whitelist) {
-        details << QStringLiteral("白名单频段：%1 ~ %2 Hz")
-            .arg(signal.startFrequencyHz, 0, 'f', 3)
-            .arg(signal.endFrequencyHz, 0, 'f', 3);
+        details << QStringLiteral("白名单频段：%1 ~ %2")
+            .arg(formatFrequency(signal.startFrequencyHz), formatFrequency(signal.endFrequencyHz));
         details << QStringLiteral("代表原始信号 ID：%1")
             .arg(businessSignal.representativeSignalId);
         QStringList originalIds;
@@ -1783,8 +1823,8 @@ void MainWindow::updateSignalTable(const algorithm::DisplaySnapshot& snapshot)
         id->setData(Qt::UserRole, details);
         id->setToolTip(details);
         m_signalTable->setItem(row, 0, id);
-        m_signalTable->setItem(row, 1, tableItem(QString::number(signal.centerFrequencyHz / 1e6, 'f', 3)));
-        m_signalTable->setItem(row, 2, tableItem(QString::number(signal.bandwidthHz / 1e3, 'f', 3)));
+        m_signalTable->setItem(row, 1, tableItem(formatFrequency(signal.centerFrequencyHz)));
+        m_signalTable->setItem(row, 2, tableItem(formatFrequency(signal.bandwidthHz)));
         m_signalTable->setItem(row, 3, tableItem(QStringLiteral("未分类")));
         QString alarmLevel = QStringLiteral("无");
         if (const auto* annotation = annotationFor(businessSignal.source, businessSignal.id)) {
@@ -1824,8 +1864,8 @@ void MainWindow::updatePlaybackResultSignals(const algorithm::DisplaySnapshot& s
         }
         PlaybackSignalRow row;
         row.id = QString::fromStdString(businessSignal.displayId);
-        row.centerFrequencyMHz = QString::number(signal.centerFrequencyHz / 1e6, 'f', 3);
-        row.bandwidthKHz = QString::number(signal.bandwidthHz / 1e3, 'f', 3);
+        row.centerFrequencyHz = signal.centerFrequencyHz;
+        row.bandwidthHz = signal.bandwidthHz;
         row.type = QStringLiteral("未分类");
         row.alarm = alarm;
         row.lastSeen = formatDetectionTime(signal.lastSeenNs, true);
@@ -1927,11 +1967,11 @@ void MainWindow::showAlarmHistory()
     filters->addWidget(whitelistFilter); filters->addWidget(activeOnly);
     filters->addStretch();
     layout->addLayout(filters);
-    auto* table = new QTableWidget(static_cast<int>(events.size()), 11, &dialog);
+    auto* table = new QTableWidget(static_cast<int>(events.size()), 12, &dialog);
     table->setObjectName(QStringLiteral("isaTable"));
     table->setHorizontalHeaderLabels({QStringLiteral("事件 ID"), QStringLiteral("业务 ID"), QStringLiteral("来源"),
-        QStringLiteral("频段(MHz)"), QStringLiteral("带宽(kHz)"), QStringLiteral("当前/最高等级"),
-        QStringLiteral("CNR(dB)"), QStringLiteral("状态"), QStringLiteral("确认"),
+        QStringLiteral("频段"), QStringLiteral("带宽"), QStringLiteral("当前/最高等级"),
+        QStringLiteral("CNR(dB)"), QStringLiteral("边界状态"), QStringLiteral("状态"), QStringLiteral("确认"),
         QStringLiteral("源"), QStringLiteral("结束原因")});
     table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
     table->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1957,14 +1997,31 @@ void MainWindow::showAlarmHistory()
         table->setItem(row, 2, tableItem(event.source == policy::PolicySignalSource::Whitelist
             ? QStringLiteral("白名单替换") : QStringLiteral("原始检测")));
         table->setItem(row, 3, tableItem(QStringLiteral("%1 ~ %2")
-            .arg(event.startFrequencyHz / 1e6, 0, 'f', 3).arg(event.endFrequencyHz / 1e6, 0, 'f', 3)));
-        table->setItem(row, 4, tableItem(QString::number(event.bandwidthHz / 1e3, 'f', 3)));
+            .arg(formatFrequency(event.startFrequencyHz), formatFrequency(event.endFrequencyHz))));
+        table->setItem(row, 4, tableItem(formatFrequency(event.bandwidthHz)));
         table->setItem(row, 5, tableItem(levelText(event.currentLevel) + QStringLiteral(" / ") + levelText(event.highestLevel)));
         table->setItem(row, 6, tableItem(QString::number(event.cnrDb, 'f', 2)));
-        table->setItem(row, 7, tableItem(stateText(event.state)));
-        table->setItem(row, 8, tableItem(event.acknowledged ? QStringLiteral("已确认") : QStringLiteral("未确认")));
-        table->setItem(row, 9, tableItem(QString::fromStdString(event.sourceName)));
-        table->setItem(row, 10, tableItem(QString::fromStdString(event.endReason)));
+        QString boundaryText;
+        if (!event.hasBoundaryMetadata) boundaryText = QStringLiteral("旧版/未记录");
+        else switch (event.boundaryState) {
+        case algorithm::BoundaryState::Stable: boundaryText = QStringLiteral("稳定"); break;
+        case algorithm::BoundaryState::PendingChange:
+            boundaryText = QStringLiteral("待确认 %1/%2").arg(event.pendingBoundaryCount).arg(event.requiredBoundaryCount); break;
+        case algorithm::BoundaryState::Ambiguous: boundaryText = QStringLiteral("关联歧义"); break;
+        case algorithm::BoundaryState::Disabled: boundaryText = QStringLiteral("稳定功能关闭"); break;
+        }
+        auto* boundaryItem = tableItem(boundaryText);
+        boundaryItem->setToolTip(event.hasBoundaryMetadata
+            ? QStringLiteral("原始：%1 ~ %2\n稳定：%3 ~ %4\n测量分支：%5")
+                .arg(formatFrequency(event.rawStartFrequencyHz), formatFrequency(event.rawEndFrequencyHz),
+                     formatFrequency(event.stableStartFrequencyHz), formatFrequency(event.stableEndFrequencyHz))
+                .arg(static_cast<int>(event.measurementBranch))
+            : QStringLiteral("旧版事件没有保存原始/稳定边界信息。"));
+        table->setItem(row, 7, boundaryItem);
+        table->setItem(row, 8, tableItem(stateText(event.state)));
+        table->setItem(row, 9, tableItem(event.acknowledged ? QStringLiteral("已确认") : QStringLiteral("未确认")));
+        table->setItem(row, 10, tableItem(QString::fromStdString(event.sourceName)));
+        table->setItem(row, 11, tableItem(QString::fromStdString(event.endReason)));
     }
     const auto applyFilters = [&, table, levelFilter, acknowledgementFilter, sourceFilter,
                                ruleFilter, whitelistFilter, activeOnly] {
@@ -2037,13 +2094,18 @@ void MainWindow::showAlarmHistory()
         QFile file(path);
         if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) return;
         QTextStream out(&file);
-        out << QStringLiteral("event_id,business_id,source_type,signal_id,representative_signal_id,original_signal_ids,start_hz,end_hz,bandwidth_hz,current_level,highest_level,state,acknowledged,policy_version,source,end_reason\n");
+        out << QStringLiteral("event_id,business_id,source_type,signal_id,representative_signal_id,original_signal_ids,start_hz,end_hz,bandwidth_hz,has_boundary_metadata,raw_start_hz,raw_end_hz,stable_start_hz,stable_end_hz,boundary_state,boundary_pending_count,boundary_required_count,measurement_branch,current_level,highest_level,state,acknowledged,policy_version,source,end_reason\n");
         for (const auto& event : events) {
             out << csvEscape(QString::fromStdString(event.eventId)) << ','
                 << csvEscape(event.displayId.empty() ? QString::number(event.signalId) : QString::fromStdString(event.displayId)) << ','
                 << static_cast<int>(event.source) << ',' << event.signalId << ',' << event.representativeSignalId << ','
                 << csvEscape([&event] { QStringList values; for (const auto id : event.originalSignalIds) values << QString::number(id); return values.join(QLatin1Char(',')); }()) << ','
                 << event.startFrequencyHz << ',' << event.endFrequencyHz << ',' << event.bandwidthHz << ','
+                << (event.hasBoundaryMetadata ? 1 : 0) << ','
+                << event.rawStartFrequencyHz << ',' << event.rawEndFrequencyHz << ','
+                << event.stableStartFrequencyHz << ',' << event.stableEndFrequencyHz << ','
+                << static_cast<int>(event.boundaryState) << ',' << event.pendingBoundaryCount << ','
+                << event.requiredBoundaryCount << ',' << static_cast<int>(event.measurementBranch) << ','
                 << static_cast<int>(event.currentLevel) << ',' << static_cast<int>(event.highestLevel) << ','
                 << static_cast<int>(event.state) << ',' << (event.acknowledged ? 1 : 0) << ','
                 << event.policyVersion << ','
@@ -2067,6 +2129,15 @@ void MainWindow::showAlarmHistory()
                 }()},
                 {QStringLiteral("startFrequencyHz"), event.startFrequencyHz},
                 {QStringLiteral("endFrequencyHz"), event.endFrequencyHz}, {QStringLiteral("bandwidthHz"), event.bandwidthHz},
+                {QStringLiteral("rawStartFrequencyHz"), event.rawStartFrequencyHz},
+                {QStringLiteral("rawEndFrequencyHz"), event.rawEndFrequencyHz},
+                {QStringLiteral("stableStartFrequencyHz"), event.stableStartFrequencyHz},
+                {QStringLiteral("stableEndFrequencyHz"), event.stableEndFrequencyHz},
+                {QStringLiteral("boundaryState"), static_cast<int>(event.boundaryState)},
+                {QStringLiteral("hasBoundaryMetadata"), event.hasBoundaryMetadata},
+                {QStringLiteral("boundaryPendingCount"), static_cast<qint64>(event.pendingBoundaryCount)},
+                {QStringLiteral("boundaryRequiredCount"), static_cast<qint64>(event.requiredBoundaryCount)},
+                {QStringLiteral("measurementBranch"), static_cast<int>(event.measurementBranch)},
                 {QStringLiteral("currentLevel"), static_cast<int>(event.currentLevel)},
                 {QStringLiteral("highestLevel"), static_cast<int>(event.highestLevel)},
                 {QStringLiteral("state"), static_cast<int>(event.state)}, {QStringLiteral("acknowledged"), event.acknowledged},

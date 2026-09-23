@@ -16,8 +16,10 @@ namespace scn::app
 struct PlaybackSignalRow
 {
     QString id;
-    QString centerFrequencyMHz;
-    QString bandwidthKHz;
+    // Detection measurements retain their algorithmic double precision;
+    // presentation rounds to whole Hz in FrequencySpinBox::formatFrequency.
+    double centerFrequencyHz = 0.0;
+    double bandwidthHz = 0.0;
     QString type;
     QString alarm;
     QString lastSeen;
@@ -30,9 +32,9 @@ struct PlaybackRecord
     QString path;
     QString fileName;
     QString source;
-    double startFrequencyHz = 0.0;
-    double endFrequencyHz = 0.0;
-    double rbwHz = 0.0;
+    qint64 startFrequencyHz = 0;
+    qint64 endFrequencyHz = 0;
+    qint64 rbwHz = 0;
     QDateTime begin;
     QDateTime end;
     qint64 sizeBytes = 0;
@@ -54,8 +56,8 @@ public:
     explicit PlaybackPage(QWidget* parent = nullptr);
 
     void rememberFile(const QString& path, const QString& sourceName,
-                      double startFrequencyHz, double endFrequencyHz,
-                      double resolutionBandwidthHz, int signalCount = 0,
+                      qint64 startFrequencyHz, qint64 endFrequencyHz,
+                      qint64 resolutionBandwidthHz, int signalCount = 0,
                       int alarmCount = 0);
     void updateResultSignals(const QString& path, const QVector<PlaybackSignalRow>& rows);
 

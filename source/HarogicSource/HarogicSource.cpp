@@ -90,8 +90,10 @@ bool HarogicSource::open(const SourceConfig& config, std::string& error)
         return false;
     }
 
-    const double startFrequencyHz = config.centerFrequencyHz - config.bandwidthHz / 2.0;
-    const double endFrequencyHz = config.centerFrequencyHz + config.bandwidthHz / 2.0;
+    const double centerFrequencyHz = static_cast<double>(config.centerFrequencyHz);
+    const double bandwidthHz = static_cast<double>(config.bandwidthHz);
+    const double startFrequencyHz = centerFrequencyHz - bandwidthHz / 2.0;
+    const double endFrequencyHz = centerFrequencyHz + bandwidthHz / 2.0;
     if (!finite(config.centerFrequencyHz) || !finite(config.bandwidthHz) ||
         config.bandwidthHz < kMinimumSpanHz || !finite(startFrequencyHz) ||
         !finite(endFrequencyHz) || startFrequencyHz < kMinimumFrequencyHz ||
@@ -161,16 +163,18 @@ bool HarogicSource::configureDevice(const SourceConfig& config, std::string& err
         return false;
     }
 
-    const double startFrequencyHz = config.centerFrequencyHz - config.bandwidthHz / 2.0;
-    const double endFrequencyHz = config.centerFrequencyHz + config.bandwidthHz / 2.0;
+    const double centerFrequencyHz = static_cast<double>(config.centerFrequencyHz);
+    const double bandwidthHz = static_cast<double>(config.bandwidthHz);
+    const double startFrequencyHz = centerFrequencyHz - bandwidthHz / 2.0;
+    const double endFrequencyHz = centerFrequencyHz + bandwidthHz / 2.0;
 
     profileIn.StartFreq_Hz = startFrequencyHz;
     profileIn.StopFreq_Hz = endFrequencyHz;
     profileIn.FreqAssignment = StartStop;
     profileIn.RBWMode = RBW_Manual;
-    profileIn.RBW_Hz = config.resolutionBandwidthHz;
+    profileIn.RBW_Hz = static_cast<double>(config.resolutionBandwidthHz);
     profileIn.VBWMode = VBW_EqualToRBW;
-    profileIn.VBW_Hz = config.resolutionBandwidthHz;
+    profileIn.VBW_Hz = static_cast<double>(config.resolutionBandwidthHz);
     profileIn.Window = windowType(config.rbwShape);
     profileIn.SweepTimeMode = SWTMode_minSWT;
     profileIn.Detector = Detector_Sample;
@@ -211,7 +215,7 @@ bool HarogicSource::configureDevice(const SourceConfig& config, std::string& err
     m_startFrequencyHz = traceInfo.StartFreq_Hz;
     m_binWidthHz = traceInfo.TraceBinBW_Hz;
     m_actualRbwHz = finite(profileOut.RBW_Hz) && profileOut.RBW_Hz > 0.0
-        ? profileOut.RBW_Hz : config.resolutionBandwidthHz;
+        ? profileOut.RBW_Hz : static_cast<double>(config.resolutionBandwidthHz);
 
     m_frequency.resize(m_traceLength);
     m_power.assign(m_traceLength, -150.0F);

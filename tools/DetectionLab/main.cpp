@@ -1,4 +1,5 @@
 #include "LabIO.h"
+#include "common/Frequency.h"
 #include "../../source/FileSource/FileSource.h"
 #include "../../runtime/PerformanceMonitor.h"
 
@@ -20,6 +21,7 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
+#include <unordered_map>
 
 namespace
 {
@@ -125,10 +127,16 @@ int main(int argc, char** argv)
         sourceConfig.frameRateHz = static_cast<int>(fps);
         sourceConfig.pointCount = unsignedValue(parser.value("points"), "points");
         bool ok = false;
-        sourceConfig.centerFrequencyHz = parser.value("center-hz").toDouble(&ok);
-        if (!ok || !std::isfinite(sourceConfig.centerFrequencyHz)) throw std::runtime_error("Invalid center-hz.");
-        sourceConfig.bandwidthHz = parser.value("span-hz").toDouble(&ok);
-        if (!ok || !std::isfinite(sourceConfig.bandwidthHz) || sourceConfig.bandwidthHz <= 0) throw std::runtime_error("Invalid span-hz.");
+        const QByteArray centerText = parser.value("center-hz").toUtf8();
+        const QByteArray spanText = parser.value("span-hz").toUtf8();
+        if (!scn::common::parseFrequencyHz(
+                std::string_view(centerText.constData(), static_cast<std::size_t>(centerText.size())),
+                sourceConfig.centerFrequencyHz))
+            throw std::runtime_error("Invalid center-hz.");
+        if (!scn::common::parseFrequencyHz(
+                std::string_view(spanText.constData(), static_cast<std::size_t>(spanText.size())),
+                sourceConfig.bandwidthHz) || sourceConfig.bandwidthHz <= 0)
+            throw std::runtime_error("Invalid span-hz.");
         sourceConfig.referenceLevelDbm = parser.value("reference-dbm").toDouble(&ok);
         if (!ok || !std::isfinite(sourceConfig.referenceLevelDbm)) throw std::runtime_error("Invalid reference-dbm.");
         const auto start = unsignedValue(parser.value("start-frame"), "start-frame");
@@ -143,9 +151,12 @@ int main(int argc, char** argv)
         if (!scn::source::FileSource::inspectFile(sourceConfig.filePath, metadata, error))
             throw std::runtime_error(error);
         const auto points = metadata.hasSpectrumLength ? metadata.spectrumLength : sourceConfig.pointCount;
-        const auto center = metadata.hasCenterFrequency ? metadata.centerFrequencyHz : sourceConfig.centerFrequencyHz;
-        const auto span = metadata.hasBandwidth ? metadata.bandwidthHz : sourceConfig.bandwidthHz;
-        const auto rbw = metadata.hasResolutionBandwidth ? metadata.resolutionBandwidthHz : sourceConfig.resolutionBandwidthHz;
+        const double center = static_cast<double>(metadata.hasCenterFrequency
+            ? metadata.centerFrequencyHz : sourceConfig.centerFrequencyHz);
+        const double span = static_cast<double>(metadata.hasBandwidth
+            ? metadata.bandwidthHz : sourceConfig.bandwidthHz);
+        const double rbw = static_cast<double>(metadata.hasResolutionBandwidth
+            ? metadata.resolutionBandwidthHz : sourceConfig.resolutionBandwidthHz);
         const auto level = metadata.hasReferenceLevel ? metadata.referenceLevelDbm : sourceConfig.referenceLevelDbm;
         if (!points || !std::isfinite(center) || !std::isfinite(span) || span <= 0.0 ||
             !std::isfinite(center - span / 2.0) || !std::isfinite(center + span / 2.0) ||
@@ -202,7 +213,7 @@ int main(int argc, char** argv)
         if (!outputPath.isEmpty()) scn::lab::openNewOutput(output, outputPath);
         if (!csvPath.isEmpty()) {
             scn::lab::openNewOutput(csv, csvPath);
-            const QByteArray header("fileFrameIndex,sequence,id,startHz,endHz,centerHz,bandwidthHz,confidence,signalDbm,noiseDbm,cnrDb,branch,firstSeenNs,lastSeenNs,occurrences\n");
+            const QByteArray header("fileFrameIndex,sequence,id,startHz,endHz,centerHz,bandwidthHz,confidence,signalDbm,noiseDbm,cnrDb,branch,firstSeenNs,lastSeenNs,occurrences,stableStartHz,stableEndHz,stableCenterHz,stableBandwidthHz,stableSignalDbm,stableNoiseDbm,stableCnrDb,boundaryState,pendingCount,requiredCount,measurementBranch,associationIoU,centerDistanceHz,bandwidthRatio\n");
             if (csv.write(header) != header.size() || !csv.flush()) throw std::runtime_error("CSV header write failed.");
         }
         if (parser.isSet("compare")) {
@@ -273,11 +284,32 @@ int main(int argc, char** argv)
             if (csv.isOpen()) {
                 QTextStream stream(&csv);
                 stream.setRealNumberPrecision(16);
+                std::unordered_map<std::int64_t, const scn::algorithm::DetectionResult::TrackedDetection*> trackedById;
+                trackedById.reserve(result.trackedDetections.size());
+                for (const auto& tracked : result.trackedDetections)
+                    trackedById.emplace(tracked.raw.id, &tracked);
                 for (const auto& s : result.detections)
+                {
                     stream << fileIndex << ',' << frame.sequence << ',' << s.id << ',' << s.startFrequencyHz << ','
                            << s.endFrequencyHz << ',' << s.centerFrequencyHz << ',' << s.bandwidthHz << ','
                            << s.confidence << ',' << s.signalLevelDbm << ',' << s.noiseLevelDbm << ',' << s.snrDb << ','
-                           << static_cast<int>(s.branch) << ',' << s.firstSeenNs << ',' << s.lastSeenNs << ',' << s.occurrenceCount << '\n';
+                           << static_cast<int>(s.branch) << ',' << s.firstSeenNs << ',' << s.lastSeenNs << ',' << s.occurrenceCount;
+                    const auto found = trackedById.find(s.id);
+                    if (found != trackedById.end()) {
+                        const auto& item = *found->second;
+                        const auto& stable = item.stable;
+                        stream << ',' << stable.startFrequencyHz << ',' << stable.endFrequencyHz << ','
+                               << stable.centerFrequencyHz << ',' << stable.bandwidthHz << ','
+                               << stable.signalLevelDbm << ',' << stable.noiseLevelDbm << ',' << stable.snrDb << ','
+                               << static_cast<int>(item.boundaryState) << ',' << item.pendingCount << ','
+                               << item.requiredCount << ',' << static_cast<int>(item.measurementBranch) << ','
+                               << item.associationIou << ',' << item.centerDistanceHz << ',' << item.bandwidthRatio;
+                    } else {
+                        // Fourteen stable-tracking columns follow the raw fields.
+                        for (int column = 0; column < 14; ++column) stream << ',';
+                    }
+                    stream << '\n';
+                }
                 stream.flush();
                 if (stream.status() != QTextStream::Ok || !csv.flush()) throw std::runtime_error("CSV write failed.");
             }

@@ -1,4 +1,5 @@
 #include "StatusBarWidget.h"
+#include "FrequencySpinBox.h"
 
 #include <QHBoxLayout>
 #include <QLabel>
@@ -78,9 +79,7 @@ QLabel* statusLabel(const QString& text, QWidget* parent, const QString& objectN
 
 QString frequencyText(double hz)
 {
-    if (hz > 1e9) return QStringLiteral("%1 GHz").arg(hz / 1e9, 0, 'f', 9);
-    if (hz > 1e6) return QStringLiteral("%1 MHz").arg(hz / 1e6, 0, 'f', 6);
-    return QStringLiteral("%1 kHz").arg(hz / 1e3, 0, 'f', 3);
+    return FrequencySpinBox::formatFrequency(hz);
 }
 }
 

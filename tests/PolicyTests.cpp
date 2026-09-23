@@ -44,7 +44,7 @@ int main()
     CHECK(intervalsOverlap(200, 220, 100, 200));
     PolicyConfig config;
     config.version = 1;
-    config.whitelists.push_back({1, "known", true, 100.0, 200.0, ""});
+    config.whitelists.push_back({1, "known", true, 100, 200, ""});
     AlarmRule rule;
     rule.id = 10; rule.name = "critical"; rule.startFrequencyHz = 100; rule.endFrequencyHz = 200;
     rule.level = AlarmLevel::Critical; rule.consecutiveHits = 2; rule.minDurationSeconds = 1.0;
@@ -71,7 +71,7 @@ int main()
     CHECK(resolved.businessSignals[1].id == 9);
 
     PolicyConfig overlapping = resolverConfig;
-    overlapping.whitelists.push_back({2, "overlap", true, 150.0, 250.0, ""});
+    overlapping.whitelists.push_back({2, "overlap", true, 150, 250, ""});
     PolicyEngine overlappingEngine;
     CHECK(overlappingEngine.setConfig(overlapping, error));
     changes.clear();
@@ -79,6 +79,64 @@ int main()
     CHECK(overlappingResult.businessSignals.size() == 2);
     CHECK(overlappingResult.businessSignals[0].id == 1);
     CHECK(overlappingResult.businessSignals[1].id == 2);
+
+    // The policy path must use stabilized boundaries/remeasured metrics while
+    // retaining the original raw observation for auditing.
+    PolicyConfig stablePolicy;
+    stablePolicy.whitelists.push_back({21, "stable band", true, 100, 200, ""});
+    AlarmRule stableRule;
+    stableRule.id = 22; stableRule.name = "stable CNR";
+    stableRule.startFrequencyHz = 100; stableRule.endFrequencyHz = 200;
+    stableRule.useMinSignalLevel = true; stableRule.minSignalLevelDbm = -30.0F;
+    stableRule.useMinCnr = true; stableRule.minCnrDb = 10.0F;
+    stableRule.level = AlarmLevel::Critical;
+    stablePolicy.alarmRules.push_back(stableRule);
+    PolicyEngine stableEngine;
+    CHECK(stableEngine.setConfig(stablePolicy, error));
+    auto stableResult = result(8000000000, {signal(90.0, 95.0, 31, -10.0F)});
+    stableResult.trackingSegment = 1;
+    DetectionResult::TrackedDetection tracked;
+    tracked.raw = signal(90.0, 95.0, 31, -10.0F);
+    tracked.stable = signal(110.0, 120.0, 31, -25.0F);
+    tracked.stable.snrDb = 18.0F;
+    tracked.boundaryState = BoundaryState::PendingChange;
+    tracked.pendingCount = 2; tracked.requiredCount = 3;
+    tracked.measurementBranch = SpectrumBranch::Maximum;
+    tracked.diagnostic = "boundary pending";
+    stableResult.trackedDetections.push_back(tracked);
+    changes.clear();
+    const auto stableSnapshot = stableEngine.process(stableResult, changes);
+    CHECK(stableSnapshot.businessSignals.size() == 1);
+    const auto& stableBusiness = stableSnapshot.businessSignals.front();
+    CHECK(stableBusiness.source == PolicySignalSource::Whitelist);
+    CHECK(stableBusiness.measurement.startFrequencyHz == 100.0);
+    CHECK(stableBusiness.stableMeasurement.startFrequencyHz == 110.0);
+    CHECK(stableBusiness.rawMeasurement.startFrequencyHz == 90.0);
+    CHECK(stableBusiness.measurement.signalLevelDbm == -25.0F);
+    CHECK(stableBusiness.measurement.snrDb == 18.0F);
+    CHECK(stableSnapshot.annotations.front().ruleMatches.front().matched);
+    CHECK(stableSnapshot.activeCriticalCount == 1);
+    CHECK(stableSnapshot.annotations.front().state == AlarmState::Active);
+    CHECK(!changes.empty() && changes.back().event.rawStartFrequencyHz == 90.0);
+    CHECK(changes.back().event.stableStartFrequencyHz == 110.0);
+    changes.clear();
+    stableResult.sequence += 1;
+    stableResult.timestampNs += 100000000;
+    stableResult.configVersion += 1;
+    const auto newConfigSnapshot = stableEngine.process(stableResult, changes);
+    CHECK(newConfigSnapshot.activeCriticalCount == 1);
+    CHECK(std::any_of(changes.begin(), changes.end(), [](const auto& item) {
+        return item.kind == AlarmEventChange::Kind::Ended && item.event.endReason == "检测配置变化";
+    }));
+    changes.clear();
+    stableResult.sequence += 1;
+    stableResult.timestampNs += 100000000;
+    stableResult.trackingSegment = 2;
+    const auto newTrackingSegment = stableEngine.process(stableResult, changes);
+    CHECK(newTrackingSegment.activeCriticalCount == 1);
+    CHECK(std::any_of(changes.begin(), changes.end(), [](const auto& item) {
+        return item.kind == AlarmEventChange::Kind::Ended && item.event.endReason == "检测轨迹分段变化";
+    }));
 
     PolicyEngine engine;
     CHECK(engine.setConfig(config, error));

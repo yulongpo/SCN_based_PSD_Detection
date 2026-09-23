@@ -3,7 +3,7 @@
 # object from the static library. Never link that factory into product targets.
 add_executable(scn_tests ScnTests.cpp)
 target_link_libraries(scn_tests PRIVATE scn_algorithm scn_source scn_application scn_runtime)
-foreach(group algorithm channel pipeline source hash)
+foreach(group algorithm channel pipeline source hash frequency)
     add_test(NAME scn_${group} COMMAND scn_tests ${group})
     set_tests_properties(scn_${group} PROPERTIES TIMEOUT 30)
 endforeach()
@@ -17,6 +17,17 @@ if(WIN32)
     add_custom_command(TARGET scn_session_tests POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different $<TARGET_FILE:Qt6::Core> $<TARGET_FILE_DIR:scn_session_tests>
         COMMENT "Deploying Qt Core for user-run session tests" VERBATIM)
+    get_property(SCN_SOURCE_RUNTIME_DLLS GLOBAL PROPERTY SCN_SOURCE_RUNTIME_DLLS)
+    foreach(SCN_SOURCE_RUNTIME_DLL IN LISTS SCN_SOURCE_RUNTIME_DLLS)
+        if(EXISTS "${SCN_SOURCE_RUNTIME_DLL}")
+            add_custom_command(TARGET scn_session_tests POST_BUILD
+                COMMAND "${CMAKE_COMMAND}" -E copy_if_different
+                    "${SCN_SOURCE_RUNTIME_DLL}"
+                    "$<TARGET_FILE_DIR:scn_session_tests>"
+                COMMENT "Deploying source runtime for session tests: ${SCN_SOURCE_RUNTIME_DLL}"
+                VERBATIM)
+        endif()
+    endforeach()
 endif()
 
 add_executable(scn_policy_tests PolicyTests.cpp)

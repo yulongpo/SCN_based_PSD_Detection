@@ -58,6 +58,7 @@ DetectionResult DetectionEngine::process(const SpectrumFrame& frame, const std::
         }
     };
     const auto finish = [&]() {
+        result.trackingSegment = m_trackingSegment;
         result.diagnostics.processingTimeMs = elapsed(begin);
         try { result.diagnostics.modelInfo = modelInfo(); }
         catch (const std::exception& e) { diagnosticFailed("modelInfo", e.what()); }
@@ -138,25 +139,77 @@ DetectionResult DetectionEngine::process(const SpectrumFrame& frame, const std::
             result.detections.resize(m_config.maxSignals);
             std::sort(result.detections.begin(), result.detections.end(), [](const auto& a, const auto& b) { return a.startFrequencyHz < b.startFrequencyHz; });
         }
-        // Prepare allocating result fields before the tracker's no-throw commit.
+        // Tracking, stable-band measurement and accumulator commit form one
+        // transaction. Work on a tracker copy so cancellation or a measurement
+        // failure cannot partially advance identities/history.
         result.diagnostics.message = "SCN average/maximum fusion; CNR is measured in dB.";
-        if (!m_tracker.update(result.detections, frame.timestampNs, m_config.tracker, m_config.maxSignals, cancelled)) {
+        auto nextTracker = m_tracker;
+        if (!nextTracker.update(result.detections, result.trackedDetections, frame,
+                                m_config.tracker, m_config.maxSignals, cancelled)) {
             m_accumulator.rollback();
-            result.detections.clear(); result.stage = DetectionStage::Cancelled;
+            result.detections.clear(); result.trackedDetections.clear();
+            result.stage = DetectionStage::Cancelled;
             return finish();
         }
+        if (m_config.tracker.boundaryStabilityEnabled) {
+            const auto averagePrefix = makePowerPrefix(m_accumulator.average());
+            const auto maximumPrefix = makePowerPrefix(m_accumulator.maximum());
+            for (auto& tracked : result.trackedDetections) {
+                if (isCancelled()) {
+                    m_accumulator.rollback();
+                    result.detections.clear(); result.trackedDetections.clear();
+                    result.stage = DetectionStage::Cancelled;
+                    return finish();
+                }
+                const auto branch = tracked.raw.branch;
+                if (branch == SpectrumBranch::Maximum) {
+                    tracked.measurementBranch = SpectrumBranch::Maximum;
+                    tracked.stable = remeasureBand(maximumPrefix, frame, tracked.stable,
+                                                   SpectrumBranch::Maximum);
+                } else if (branch == SpectrumBranch::Both) {
+                    const auto average = remeasureBand(averagePrefix, frame, tracked.stable,
+                                                       SpectrumBranch::Average);
+                    const auto maximum = remeasureBand(maximumPrefix, frame, tracked.stable,
+                                                       SpectrumBranch::Maximum);
+                    // Keep all measurement fields from one branch. A tie favors Average.
+                    if (maximum.signalLevelDbm > average.signalLevelDbm) {
+                        tracked.measurementBranch = SpectrumBranch::Maximum;
+                        tracked.stable = maximum;
+                    } else {
+                        tracked.measurementBranch = SpectrumBranch::Average;
+                        tracked.stable = average;
+                    }
+                    tracked.stable.branch = SpectrumBranch::Both;
+                } else {
+                    tracked.measurementBranch = SpectrumBranch::Average;
+                    tracked.stable = remeasureBand(averagePrefix, frame, tracked.stable,
+                                                   SpectrumBranch::Average);
+                }
+            }
+        } else {
+            for (auto& tracked : result.trackedDetections)
+                tracked.measurementBranch = tracked.raw.branch;
+        }
+        if (isCancelled()) {
+            m_accumulator.rollback();
+            result.detections.clear(); result.trackedDetections.clear();
+            result.stage = DetectionStage::Cancelled;
+            return finish();
+        }
+        result.trackingApplied = true;
+        m_tracker = std::move(nextTracker);
         m_accumulator.commit();
         m_lastSequence = frame.sequence; m_lastTimestamp = frame.timestampNs;
         result.diagnostics.postprocessTimeMs += elapsed(postBegin);
         result.stage = m_accumulator.count() < m_config.accumulator.frames ? DetectionStage::Accumulating : DetectionStage::Completed;
     } catch (const std::exception& e) {
         m_accumulator.rollback();
-        result.detections.clear(); result.stage = DetectionStage::Error;
+        result.detections.clear(); result.trackedDetections.clear(); result.stage = DetectionStage::Error;
         try { result.diagnostics.message = e.what(); }
         catch (...) { result.diagnostics.message.clear(); }
     } catch (...) {
         m_accumulator.rollback();
-        result.detections.clear(); result.stage = DetectionStage::Error;
+        result.detections.clear(); result.trackedDetections.clear(); result.stage = DetectionStage::Error;
         try { result.diagnostics.message = "Unknown detection exception."; }
         catch (...) { result.diagnostics.message.clear(); }
     }
@@ -166,6 +219,7 @@ DetectionResult DetectionEngine::process(const SpectrumFrame& frame, const std::
 void DetectionEngine::reset(std::uint64_t generation)
 {
     m_generation = generation ? generation : m_generation + 1;
+    if (++m_trackingSegment == 0) ++m_trackingSegment;
     m_accumulator.reset(m_config.accumulator.frames);
     m_tracker.reset();
     m_hasGeometry = false;

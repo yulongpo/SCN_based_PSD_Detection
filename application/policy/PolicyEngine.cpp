@@ -259,6 +259,19 @@ SignalAnnotation PolicyEngine::annotate(PolicySignal& policySignal,
     state.event.signalLevelDbm = signal.signalLevelDbm;
     state.event.cnrDb = signal.snrDb;
     state.event.confidence = signal.confidence;
+    if (policySignal.hasBoundaryMetadata) {
+        state.event.rawStartFrequencyHz = policySignal.rawMeasurement.startFrequencyHz;
+        state.event.rawEndFrequencyHz = policySignal.rawMeasurement.endFrequencyHz;
+        state.event.stableStartFrequencyHz = policySignal.stableMeasurement.startFrequencyHz;
+        state.event.stableEndFrequencyHz = policySignal.stableMeasurement.endFrequencyHz;
+        state.event.boundaryState = policySignal.boundaryState;
+        state.event.pendingBoundaryCount = static_cast<std::uint32_t>(policySignal.pendingBoundaryCount);
+        state.event.requiredBoundaryCount = static_cast<std::uint32_t>(policySignal.requiredBoundaryCount);
+        state.event.measurementBranch = policySignal.measurementBranch;
+        state.event.hasBoundaryMetadata = true;
+    } else {
+        state.event.hasBoundaryMetadata = false;
+    }
     SignalAnnotation annotation;
     annotation.source = policySignal.source;
     annotation.signalId = policySignal.id;
@@ -379,6 +392,8 @@ void PolicyEngine::reset(std::uint64_t generation, std::uint64_t segment,
     }
     m_signals.clear();
     m_generation = generation;
+    m_detectionConfigVersion = 0;
+    m_trackingSegment = 0;
     m_segment = segment;
 }
 
@@ -387,7 +402,15 @@ PolicySnapshot PolicyEngine::process(const algorithm::DetectionResult& result,
 {
     if (result.generation != m_generation) {
         reset(result.generation, m_segment + 1, "检测轮次变化", &changes);
+    } else if (result.trackingSegment != 0 && m_trackingSegment != 0 &&
+               result.trackingSegment != m_trackingSegment) {
+        reset(result.generation, m_segment + 1, "检测轨迹分段变化", &changes);
+    } else if (m_detectionConfigVersion != 0 &&
+               result.configVersion != m_detectionConfigVersion) {
+        reset(result.generation, m_segment + 1, "检测配置变化", &changes);
     }
+    m_detectionConfigVersion = result.configVersion;
+    m_trackingSegment = result.trackingSegment;
     PolicySnapshot snapshot;
     snapshot.generation = result.generation;
     snapshot.detectionConfigVersion = result.configVersion;
@@ -395,7 +418,9 @@ PolicySnapshot PolicyEngine::process(const algorithm::DetectionResult& result,
     snapshot.policyVersion = m_config.version;
     if (result.stage != algorithm::DetectionStage::Accumulating &&
         result.stage != algorithm::DetectionStage::Completed) return snapshot;
-    const auto policySignals = m_resolver.resolve(result.detections, m_config.whitelists);
+    const auto policySignals = result.trackingApplied || !result.trackedDetections.empty()
+        ? m_resolver.resolve(result.trackedDetections, m_config.whitelists)
+        : m_resolver.resolve(result.detections, m_config.whitelists);
     std::vector<SignalKey> observed;
     observed.reserve(policySignals.size());
     snapshot.businessSignals = policySignals;
