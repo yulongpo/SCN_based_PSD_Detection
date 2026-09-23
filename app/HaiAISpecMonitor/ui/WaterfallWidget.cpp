@@ -876,18 +876,20 @@ void WaterfallWidget::paintEvent(QPaintEvent*)
     //    m_direct2D.drawLine(QPointF(plot.left(), y), QPointF(plot.right(), y),
     //                        QColor(61, 103, 145), 1.6F);
     //}
-    m_direct2D.drawText(QStringLiteral("时频瀑布图"), QRectF(74, 4, width() - 96, 18),
-                        QColor(177, 197, 218), 13.0F, Qt::AlignLeft);
+    m_direct2D.drawVerticalText(QStringLiteral("时频瀑布图"),
+                                QRectF(1.0, plot.center().y() - 48.0, 16.0, 96.0),
+                                QColor(177, 197, 218), 12.0F);
+    m_direct2D.drawVerticalText(QStringLiteral("帧数"),
+                                QRectF(19.0, plot.center().y() - 24.0, 16.0, 48.0),
+                                QColor(128, 158, 187), 12.0F);
     for (int index = 0; index <= 4; ++index) {
         const int rowNumber = index == 0 ? 1 : index * 25;
         const qreal y = plot.top() + plot.height() * index / 4.0;
         m_direct2D.drawText(QString::number(rowNumber),
-                            QRectF(10, y - 9, 54, 18),
+                            QRectF(39, y - 9, 30, 18),
                             QColor(177, 197, 218), 12.0F,
                             Qt::AlignRight | Qt::AlignVCenter);
     }
-    m_direct2D.drawText(QStringLiteral("帧数"), QRectF(8, 4, 56, 18),
-                        QColor(128, 158, 187), 12.0F, Qt::AlignRight);
 
     if (m_hasSelection && m_viewInitialized) {
         const qreal selectedX = plot.left() + plot.width() *

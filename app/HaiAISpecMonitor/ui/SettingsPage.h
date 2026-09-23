@@ -49,6 +49,7 @@ signals:
     void logMessage(const QString& message);
     void displayRefreshRateChanged(int rateHz);
     void displayDynamicRangeChanged(double rangeDb);
+    void temporaryUnobservedMarkersChanged(bool visible);
     void detectionApplyRequested();
     void policyApplyRequested();
     void alarmHistoryRequested();
@@ -59,6 +60,8 @@ private slots:
     void removeRule();
     void addWhitelist();
     void removeWhitelist();
+    void addChannelPrior();
+    void removeChannelPrior();
     void applyPolicy();
     void importPolicy();
     void exportPolicy();
@@ -120,6 +123,18 @@ private:
     QDoubleSpinBox* m_trackJumpEdgeChangeRatio = nullptr;
     QDoubleSpinBox* m_trackJumpCenterToleranceRatio = nullptr;
     QDoubleSpinBox* m_trackJumpBandwidthToleranceRatio = nullptr;
+    QCheckBox* m_channelAggregationEnabled = nullptr;
+    FrequencySpinBox* m_channelMaximumBandwidth = nullptr;
+    QDoubleSpinBox* m_channelHighThreshold = nullptr;
+    QDoubleSpinBox* m_channelLowThreshold = nullptr;
+    QDoubleSpinBox* m_channelMinimumSupport = nullptr;
+    QDoubleSpinBox* m_channelMinimumCoverage = nullptr;
+    QSpinBox* m_channelMergeConfirmations = nullptr;
+    QSpinBox* m_channelSplitConfirmations = nullptr;
+    QSpinBox* m_channelMissingConfirmations = nullptr;
+    QDoubleSpinBox* m_channelMissingHold = nullptr;
+    QDoubleSpinBox* m_channelHistorySeconds = nullptr;
+    QTableWidget* m_channelPriorTable = nullptr;
     QSpinBox* m_maxSignals = nullptr;
     QLabel* m_detectionFeedback = nullptr;
 };

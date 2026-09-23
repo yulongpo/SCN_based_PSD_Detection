@@ -76,6 +76,7 @@ struct RuleMatch
     std::string ruleName;
     AlarmLevel level = AlarmLevel::None;
     bool matched = false;
+    bool known = true;
     std::string reason;
 };
 
@@ -95,6 +96,7 @@ struct SignalAnnotation
     AlarmLevel level = AlarmLevel::None;
     bool acknowledged = false;
     std::string eventId;
+    algorithm::ObservationState observationState = algorithm::ObservationState::Observed;
 };
 
 struct PolicySignal
@@ -118,6 +120,12 @@ struct PolicySignal
     std::vector<std::int64_t> originalSignalIds;
     std::vector<std::int64_t> whitelistIds;
     std::vector<std::string> whitelistNames;
+    algorithm::ObservationState observationState = algorithm::ObservationState::Observed;
+    bool aggregate = false;
+    bool measurementValid = true;
+    std::string priorName;
+    std::vector<algorithm::CandidateReference> contributors;
+    std::vector<std::int64_t> relatedChannelIds;
 };
 
 struct AlarmEvent

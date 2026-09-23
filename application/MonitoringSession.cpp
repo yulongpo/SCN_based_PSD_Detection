@@ -418,9 +418,33 @@ void MonitoringSession::publishLatest()
             result->startFrequencyHz == frame->startFrequencyHz &&
             result->binWidthHz == frame->binWidthHz && result->pointCount == frame->powerDb.size() &&
             result->referenceLevelDbm == frame->referenceLevelDbm &&
-            result->resolutionBandwidthHz == frame->resolutionBandwidthHz && result->sourceName == frame->sourceName)
-            snapshot->detection = *result;
-        else snapshot->detection.diagnostics.message = "SCN waiting for a compatible detection result.";
+            result->resolutionBandwidthHz == frame->resolutionBandwidthHz && result->sourceName == frame->sourceName) {
+            // The display only consumes result metadata and timing diagnostics;
+            // the raw candidate/evidence arrays can be tens of thousands of
+            // cells and remain available on the pipeline result for DetectionLab.
+            auto& display = snapshot->detection;
+            display.sequence = result->sequence;
+            display.generation = result->generation;
+            display.configVersion = result->configVersion;
+            display.trackingSegment = result->trackingSegment;
+            display.firstSequence = result->firstSequence;
+            display.firstTimestampNs = result->firstTimestampNs;
+            display.timestampNs = result->timestampNs;
+            display.accumulatedFrames = result->accumulatedFrames;
+            display.requiredFrames = result->requiredFrames;
+            display.startFrequencyHz = result->startFrequencyHz;
+            display.binWidthHz = result->binWidthHz;
+            display.pointCount = result->pointCount;
+            display.referenceLevelDbm = result->referenceLevelDbm;
+            display.resolutionBandwidthHz = result->resolutionBandwidthHz;
+            display.sourceName = result->sourceName;
+            display.stage = result->stage;
+            display.trackingApplied = result->trackingApplied;
+            display.channelAggregationApplied = result->channelAggregationApplied;
+            display.diagnostics = result->diagnostics;
+        } else {
+            snapshot->detection.diagnostics.message = "SCN waiting for a compatible detection result.";
+        }
         snapshot->running = m_pipeline->active;
         snapshot->droppedFrames = m_pipeline->queue.dropped();
         emit snapshotReady(snapshot);

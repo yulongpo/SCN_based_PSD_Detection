@@ -395,12 +395,59 @@ algorithm::DetectionConfig readConfiguration(const QString& path)
     c.tracker.jumpEdgeChangeRatio = number(t, "jumpEdgeChangeRatio", c.tracker.jumpEdgeChangeRatio);
     c.tracker.jumpCenterToleranceRatio = number(t, "jumpCenterToleranceRatio", c.tracker.jumpCenterToleranceRatio);
     c.tracker.jumpBandwidthToleranceRatio = number(t, "jumpBandwidthToleranceRatio", c.tracker.jumpBandwidthToleranceRatio);
+    const auto ca = object(root, "channelAggregation");
+    if (ca.contains("enabled")) {
+        if (!ca.value("enabled").isBool()) throw std::runtime_error("channelAggregation.enabled must be boolean.");
+        c.channelAggregation.enabled = ca.value("enabled").toBool();
+    }
+    c.channelAggregation.highThresholdDb = number(ca, "highThresholdDb", c.channelAggregation.highThresholdDb);
+    c.channelAggregation.lowThresholdDb = number(ca, "lowThresholdDb", c.channelAggregation.lowThresholdDb);
+    c.channelAggregation.minimumSupportRatio = number(ca, "minimumSupportRatio", c.channelAggregation.minimumSupportRatio);
+    c.channelAggregation.minimumCoverageRatio = number(ca, "minimumCoverageRatio", c.channelAggregation.minimumCoverageRatio);
+    if (!integerHz(ca, "maximumAutomaticBandwidthHz", c.channelAggregation.maximumAutomaticBandwidthHz,
+                   c.channelAggregation.maximumAutomaticBandwidthHz))
+        throw std::runtime_error("channelAggregation.maximumAutomaticBandwidthHz must be integer Hz.");
+    c.channelAggregation.mergeConfirmationCount = static_cast<std::uint32_t>(count(
+        ca, "mergeConfirmationCount", c.channelAggregation.mergeConfirmationCount, 20));
+    c.channelAggregation.splitConfirmationCount = static_cast<std::uint32_t>(count(
+        ca, "splitConfirmationCount", c.channelAggregation.splitConfirmationCount, 40));
+    c.channelAggregation.missingConfirmationCount = static_cast<std::uint32_t>(count(
+        ca, "missingConfirmationCount", c.channelAggregation.missingConfirmationCount, 20));
+    c.channelAggregation.missingHoldSeconds = number(ca, "missingHoldSeconds", c.channelAggregation.missingHoldSeconds);
+    c.channelAggregation.historySeconds = number(ca, "historySeconds", c.channelAggregation.historySeconds);
+    if (ca.contains("priors")) {
+        if (!ca.value("priors").isArray()) throw std::runtime_error("channelAggregation.priors must be an array.");
+        c.channelAggregation.priors.clear();
+        for (const auto entryValue : ca.value("priors").toArray()) {
+            if (!entryValue.isObject()) throw std::runtime_error("Each channel prior must be an object.");
+            const auto entry = entryValue.toObject();
+            algorithm::ChannelPrior prior;
+            prior.id = static_cast<std::int64_t>(count(entry, "id", 0, 2'000'000'000));
+            if (!entry.value("name").isString()) throw std::runtime_error("Channel prior name must be a string.");
+            prior.name = entry.value("name").toString().trimmed().toStdString();
+            if (entry.contains("enabled")) {
+                if (!entry.value("enabled").isBool()) throw std::runtime_error("Channel prior enabled must be boolean.");
+                prior.enabled = entry.value("enabled").toBool();
+            }
+            if (!integerHz(entry, "startFrequencyHz", 0, prior.startFrequencyHz) ||
+                !integerHz(entry, "endFrequencyHz", 0, prior.endFrequencyHz))
+                throw std::runtime_error("Channel prior frequencies must be integer Hz.");
+            c.channelAggregation.priors.push_back(std::move(prior));
+        }
+    }
     std::string error;
     if (!algorithm::validateConfig(c, error)) throw std::runtime_error(error);
     return c;
 }
 QJsonObject configurationJson(const algorithm::DetectionConfig& c)
 {
+    QJsonArray priors;
+    for (const auto& prior : c.channelAggregation.priors) {
+        priors.append(QJsonObject{{"id", static_cast<qint64>(prior.id)},
+            {"name", QString::fromStdString(prior.name)}, {"enabled", prior.enabled},
+            {"startFrequencyHz", static_cast<qint64>(prior.startFrequencyHz)},
+            {"endFrequencyHz", static_cast<qint64>(prior.endFrequencyHz)}});
+    }
     return {{"enabled", c.enabled}, {"maxSignals", static_cast<qint64>(c.maxSignals)},
         {"accumulator", QJsonObject{{"frames", static_cast<qint64>(c.accumulator.frames)}}},
         {"detector", QJsonObject{{"modelPath", QString::fromStdString(c.detector.modelPath)}, {"deviceIndex", c.detector.deviceIndex},
@@ -418,11 +465,25 @@ QJsonObject configurationJson(const algorithm::DetectionConfig& c)
             {"jumpConfirmationCount", static_cast<qint64>(c.tracker.jumpConfirmationCount)},
             {"jumpEdgeChangeRatio", c.tracker.jumpEdgeChangeRatio},
             {"jumpCenterToleranceRatio", c.tracker.jumpCenterToleranceRatio},
-            {"jumpBandwidthToleranceRatio", c.tracker.jumpBandwidthToleranceRatio}}}};
+            {"jumpBandwidthToleranceRatio", c.tracker.jumpBandwidthToleranceRatio}}},
+        {"channelAggregation", QJsonObject{{"enabled", c.channelAggregation.enabled},
+            {"highThresholdDb", c.channelAggregation.highThresholdDb},
+            {"lowThresholdDb", c.channelAggregation.lowThresholdDb},
+            {"minimumSupportRatio", c.channelAggregation.minimumSupportRatio},
+            {"minimumCoverageRatio", c.channelAggregation.minimumCoverageRatio},
+            {"maximumAutomaticBandwidthHz", static_cast<qint64>(c.channelAggregation.maximumAutomaticBandwidthHz)},
+            {"mergeConfirmationCount", static_cast<qint64>(c.channelAggregation.mergeConfirmationCount)},
+            {"splitConfirmationCount", static_cast<qint64>(c.channelAggregation.splitConfirmationCount)},
+            {"missingConfirmationCount", static_cast<qint64>(c.channelAggregation.missingConfirmationCount)},
+            {"missingHoldSeconds", c.channelAggregation.missingHoldSeconds},
+            {"historySeconds", c.channelAggregation.historySeconds}, {"priors", priors}}}};
 }
 QJsonObject resultJson(const algorithm::DetectionResult& r, std::size_t index)
 {
     const auto& d = r.diagnostics;
+    QJsonArray channelCandidates;
+    for (const auto& item : r.channelCandidates)
+        channelCandidates.append(QJsonObject{{"signal", signalJson(item.signal)}, {"passedCnr", item.passedCnr}});
     QJsonArray tracked;
     for (const auto& item : r.trackedDetections) {
         tracked.append(QJsonObject{{"raw", signalJson(item.raw)}, {"stable", signalJson(item.stable)},
@@ -434,6 +495,38 @@ QJsonObject resultJson(const algorithm::DetectionResult& r, std::size_t index)
             {"measurementBranch", static_cast<int>(item.measurementBranch)},
             {"diagnostic", QString::fromStdString(item.diagnostic)}});
     }
+    QJsonArray channels;
+    for (const auto& item : r.channelDetections) {
+        QJsonArray contributors;
+        for (const auto& reference : item.contributors)
+            contributors.append(QJsonObject{{"sequence", QString::number(reference.sequence)},
+                {"candidateIndex", static_cast<qint64>(reference.candidateIndex)}});
+        QJsonArray related;
+        for (const auto id : item.relatedChannelIds) related.append(static_cast<qint64>(id));
+        channels.append(QJsonObject{{"raw", signalJson(item.raw)}, {"stable", signalJson(item.stable)},
+            {"boundaryState", static_cast<int>(item.boundaryState)},
+            {"observationState", static_cast<int>(item.observationState)}, {"aggregate", item.aggregate},
+            {"measurementValid", item.measurementValid},
+            {"pendingMergeCount", static_cast<qint64>(item.pendingMergeCount)},
+            {"pendingSplitCount", static_cast<qint64>(item.pendingSplitCount)},
+            {"missingCount", static_cast<qint64>(item.missingCount)},
+            {"requiredMissingCount", static_cast<qint64>(item.requiredMissingCount)},
+            {"occupancyCoverage", item.occupancyCoverage}, {"noiseFloorDbm", item.noiseFloorDbm},
+            {"priorName", QString::fromStdString(item.priorName)}, {"diagnostic", QString::fromStdString(item.diagnostic)},
+            {"contributors", contributors}, {"relatedChannelIds", related}});
+    }
+    QJsonArray groupingDiagnostics;
+    for (const auto& item : r.channelGroupingDiagnostics) {
+        QJsonArray indices;
+        for (const auto index : item.candidateIndices) indices.append(static_cast<qint64>(index));
+        groupingDiagnostics.append(QJsonObject{{"candidateIndices", indices},
+            {"startHz", item.startFrequencyHz}, {"endHz", item.endFrequencyHz},
+            {"occupancyCoverage", item.occupancyCoverage},
+            {"currentKnownRatio", item.currentKnownRatio},
+            {"currentOccupiedRatio", item.currentOccupiedRatio},
+            {"resultingChannelId", static_cast<qint64>(item.resultingChannelId)},
+            {"disposition", QString::fromStdString(item.disposition)}});
+    }
     return {{"fileFrameIndex", static_cast<qint64>(index)}, {"sequence", QString::number(r.sequence)},
         {"generation", QString::number(r.generation)}, {"configVersion", QString::number(r.configVersion)},
         {"trackingSegment", QString::number(r.trackingSegment)},
@@ -444,11 +537,21 @@ QJsonObject resultJson(const algorithm::DetectionResult& r, std::size_t index)
         {"accumulatedFrames", static_cast<qint64>(r.accumulatedFrames)},
         {"requiredFrames", static_cast<qint64>(r.requiredFrames)}, {"stage", static_cast<int>(r.stage)},
         {"detections", signalsJson(r.detections)}, {"trackedDetections", tracked},
+        {"channelAggregationApplied", r.channelAggregationApplied},
+        {"channelCandidates", channelCandidates}, {"channelDetections", channels},
+        {"channelGroupingDiagnostics", groupingDiagnostics},
+        {"channelEvidence", QJsonObject{{"unitWidthHz", r.channelEvidenceUnitWidthHz},
+            {"historyRows", static_cast<qint64>(r.channelEvidenceHistoryRows)},
+            {"cellCount", static_cast<qint64>(r.channelOccupancyMask.size())}}},
         {"trackingApplied", r.trackingApplied}, {"diagnostics", QJsonObject{
             {"totalMs", d.processingTimeMs}, {"throughputHz", d.throughputHz},
             {"exportFailed", d.exportFailed}, {"diagnosticError", QString::fromStdString(d.diagnosticError)},
             {"accumulationMs", d.accumulationTimeMs}, {"inferenceMs", d.inferenceTimeMs},
-            {"postprocessMs", d.postprocessTimeMs}, {"windows", static_cast<qint64>(d.windowCount)},
+            {"postprocessMs", d.postprocessTimeMs}, {"channelAggregationMs", d.channelAggregationTimeMs},
+            {"aggregateCount", static_cast<qint64>(d.aggregateCount)},
+            {"pendingChannelCount", static_cast<qint64>(d.pendingChannelCount)},
+            {"channelRejectedCount", static_cast<qint64>(d.channelRejectedCount)},
+            {"windows", static_cast<qint64>(d.windowCount)},
             {"candidates", static_cast<qint64>(d.candidateCount)}, {"cnrAccepted", static_cast<qint64>(d.cnrAcceptedCount)},
             {"truncated", static_cast<qint64>(d.truncatedCount)}, {"message", QString::fromStdString(d.message)}}}};
 }
@@ -542,5 +645,16 @@ void StageExporter::window(std::uint64_t, algorithm::SpectrumBranch branch, std:
 void StageExporter::fused(const algorithm::DetectionResult& r)
 {
     writeJson(m_prefix + "_result.json", resultJson(r, m_fileFrameIndex));
+    if (r.channelAggregationApplied) {
+        QJsonArray floor, known, occupied;
+        for (const auto value : r.channelNoiseFloorDbm)
+            floor.append(std::isfinite(value) ? QJsonValue(value) : QJsonValue(QJsonValue::Null));
+        for (const auto value : r.channelEvidenceKnown) known.append(static_cast<int>(value));
+        for (const auto value : r.channelOccupancyMask) occupied.append(static_cast<int>(value));
+        writeJson(m_prefix + "_channel_evidence.json", QJsonObject{
+            {"unitWidthHz", r.channelEvidenceUnitWidthHz},
+            {"historyRows", static_cast<qint64>(r.channelEvidenceHistoryRows)},
+            {"noiseFloorDbm", floor}, {"knownMask", known}, {"occupancyMask", occupied}});
+    }
 }
 }

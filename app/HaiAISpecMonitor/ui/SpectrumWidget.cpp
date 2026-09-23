@@ -341,6 +341,11 @@ bool SpectrumWidget::detectionMarkersVisible() const noexcept
     return m_showDetectionMarkers;
 }
 
+bool SpectrumWidget::temporarilyUnobservedMarkersVisible() const noexcept
+{
+    return m_showTemporarilyUnobservedMarkers;
+}
+
 void SpectrumWidget::setMaxSpectrumVisible(bool visible)
 {
     if (m_maxSpectrumButton) {
@@ -382,6 +387,13 @@ void SpectrumWidget::setDetectionMarkersVisible(bool visible)
         m_showDetectionMarkers = visible;
         update();
     }
+}
+
+void SpectrumWidget::setTemporarilyUnobservedMarkersVisible(bool visible)
+{
+    if (m_showTemporarilyUnobservedMarkers == visible) return;
+    m_showTemporarilyUnobservedMarkers = visible;
+    update();
 }
 
 QRectF SpectrumWidget::plotRect() const
@@ -790,16 +802,33 @@ void SpectrumWidget::drawDetectionMarkers(Direct2DChartRenderer& renderer,
 
         const QColor color = businessSignal.source == application::policy::PolicySignalSource::Whitelist
             ? QColor(255, 190, 48) : QColor(10, 140, 254);
+        const bool temporarilyUnobserved = businessSignal.observationState ==
+            algorithm::ObservationState::TemporarilyUnobserved;
+        if (temporarilyUnobserved && !m_showTemporarilyUnobservedMarkers) continue;
         const qreal left = plot.left() + plot.width() * (startHz - viewStartHz) / viewWidthHz;
         const qreal right = plot.left() + plot.width() * (endHz - viewStartHz) / viewWidthHz;
         QRectF marker(left, plot.top() + 5.0,
                       std::max<qreal>(3.0, right - left), plot.height() - 10.0);
-        renderer.fillRect(marker, QColor(color.red(), color.green(), color.blue(), 24));
-        renderer.drawRect(marker, color, 1.0F);
+        const QColor markerColor(color.red(), color.green(), color.blue(), temporarilyUnobserved ? 115 : 255);
+        renderer.fillRect(marker, QColor(color.red(), color.green(), color.blue(), temporarilyUnobserved ? 8 : 24));
+        if (temporarilyUnobserved) {
+            constexpr qreal dash = 5.0;
+            constexpr qreal gap = 4.0;
+            for (qreal x = marker.left(); x < marker.right(); x += dash + gap) {
+                renderer.drawLine(QPointF(x, marker.top()), QPointF(std::min(x + dash, marker.right()), marker.top()), markerColor, 1.0F);
+                renderer.drawLine(QPointF(x, marker.bottom()), QPointF(std::min(x + dash, marker.right()), marker.bottom()), markerColor, 1.0F);
+            }
+            for (qreal y = marker.top(); y < marker.bottom(); y += dash + gap) {
+                renderer.drawLine(QPointF(marker.left(), y), QPointF(marker.left(), std::min(y + dash, marker.bottom())), markerColor, 1.0F);
+                renderer.drawLine(QPointF(marker.right(), y), QPointF(marker.right(), std::min(y + dash, marker.bottom())), markerColor, 1.0F);
+            }
+        } else {
+            renderer.drawRect(marker, markerColor, 1.0F);
+        }
         renderer.drawText(QString::fromStdString(businessSignal.displayId),
                           QRectF(marker.left() + 4.0, marker.top() + 3.0,
                                  std::max<qreal>(0.0, marker.width() - 8.0), 17.0),
-                          color.lighter(125), 12.0F, Qt::AlignLeft);
+                          temporarilyUnobserved ? markerColor : color.lighter(125), 12.0F, Qt::AlignLeft);
     }
 }
 
@@ -879,14 +908,15 @@ void SpectrumWidget::paintEvent(QPaintEvent*)
     }
     m_direct2D.drawRect(plot, QColor(43, 76, 111), 1.0F);
 
-    m_direct2D.drawText(QStringLiteral("功率谱 (dB)"), QRectF(12, 4, width() - 24, 18),
-                        QColor(177, 197, 218), 13.0F, Qt::AlignLeft);
+    m_direct2D.drawVerticalText(QStringLiteral("功率谱 (dB)"),
+                                QRectF(2.0, plot.center().y() - 65.0, 18.0, 130.0),
+                                QColor(177, 197, 218), 13.0F);
 
     for (int i = 0; i <= 6; ++i) {
         const double db = viewMaxDb - (viewMaxDb - viewMinDb) * i / 6.0;
         const qreal y = plot.top() + plot.height() * i / 6.0;
         m_direct2D.drawText(QStringLiteral("%1").arg(db, 0, 'f', 0),
-                            QRectF(8, y - 9, 58, 18), QColor(177, 197, 218),
+                            QRectF(24, y - 9, 44, 18), QColor(177, 197, 218),
                             12.0F, Qt::AlignRight | Qt::AlignVCenter);
     }
 

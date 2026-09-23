@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace scn::algorithm
 {
@@ -40,6 +41,32 @@ struct TrackerConfig
     double jumpCenterToleranceRatio = 0.10;
     double jumpBandwidthToleranceRatio = 1.20;
 };
+
+struct ChannelPrior
+{
+    std::int64_t id = 0;
+    std::string name;
+    bool enabled = true;
+    std::int64_t startFrequencyHz = 0;
+    std::int64_t endFrequencyHz = 0;
+};
+
+struct ChannelAggregationConfig
+{
+    bool enabled = true;
+    double highThresholdDb = 6.0;
+    double lowThresholdDb = 3.0;
+    double minimumSupportRatio = 0.20;
+    double minimumCoverageRatio = 0.70;
+    std::int64_t maximumAutomaticBandwidthHz = 200'000'000;
+    std::uint32_t mergeConfirmationCount = 3;
+    std::uint32_t splitConfirmationCount = 5;
+    std::uint32_t missingConfirmationCount = 3;
+    double missingHoldSeconds = 0.5;
+    double historySeconds = 2.0;
+    std::vector<ChannelPrior> priors;
+};
+
 struct DetectionConfig
 {
     bool enabled = true;
@@ -49,6 +76,7 @@ struct DetectionConfig
     RefineConfig refine;
     FusionConfig fusion;
     TrackerConfig tracker;
+    ChannelAggregationConfig channelAggregation;
 };
 
 enum class ConfigApplyResult

@@ -232,6 +232,39 @@ SignalAnnotation PolicyEngine::annotate(PolicySignal& policySignal,
 {
     const auto& signal = policySignal.measurement;
     const SignalKey key{policySignal.source, policySignal.id};
+    if (policySignal.observationState == algorithm::ObservationState::TemporarilyUnobserved) {
+        SignalAnnotation unknown;
+        unknown.source = policySignal.source;
+        unknown.signalId = policySignal.id;
+        unknown.displayId = policySignal.displayId;
+        unknown.representativeSignalId = policySignal.representativeSignalId;
+        unknown.originalSignalIds = policySignal.originalSignalIds;
+        unknown.whitelistIds = policySignal.whitelistIds;
+        unknown.whitelistNames = policySignal.whitelistNames;
+        unknown.observationState = policySignal.observationState;
+        if (!policySignal.whitelistIds.empty()) {
+            unknown.primaryWhitelistId = policySignal.whitelistIds.front();
+            unknown.primaryWhitelistName = policySignal.whitelistNames.empty()
+                ? std::string{} : policySignal.whitelistNames.front();
+        }
+        for (const auto& rule : m_config.alarmRules) {
+            if (!rule.enabled) continue;
+            RuleMatch match;
+            match.ruleId = rule.id; match.ruleName = rule.name; match.level = rule.level;
+            match.known = false;
+            match.reason = "信道当前未观测，规则状态冻结";
+            unknown.ruleMatches.push_back(std::move(match));
+        }
+        const auto existing = m_signals.find(key);
+        if (existing != m_signals.end()) {
+            unknown.state = existing->second.event.state;
+            unknown.level = existing->second.event.currentLevel;
+            unknown.acknowledged = existing->second.event.acknowledged;
+            unknown.eventId = existing->second.event.eventId;
+            for (auto& ruleState : existing->second.rules) ruleState.second.continuityBroken = true;
+        }
+        return unknown;
+    }
     auto& state = m_signals[key];
     const std::int64_t observationTime = signal.lastSeenNs != 0
         ? signal.lastSeenNs : result.timestampNs;
@@ -280,6 +313,7 @@ SignalAnnotation PolicyEngine::annotate(PolicySignal& policySignal,
     annotation.originalSignalIds = policySignal.originalSignalIds;
     annotation.whitelistIds = policySignal.whitelistIds;
     annotation.whitelistNames = policySignal.whitelistNames;
+    annotation.observationState = policySignal.observationState;
     if (!policySignal.whitelistIds.empty()) {
         annotation.primaryWhitelistId = policySignal.whitelistIds.front();
         annotation.primaryWhitelistName = policySignal.whitelistNames.empty()
@@ -287,23 +321,43 @@ SignalAnnotation PolicyEngine::annotate(PolicySignal& policySignal,
     }
     for (const auto& rule : m_config.alarmRules) {
         if (!rule.enabled) continue;
+        const bool known = !rule.useMinCnr || policySignal.measurementValid;
         const bool matched = ruleMatches(rule, signal);
         RuleMatch match;
         match.ruleId = rule.id; match.ruleName = rule.name; match.level = rule.level;
         match.matched = matched;
-        match.reason = matched ? "条件满足" : "条件不满足";
+        match.known = known;
+        match.reason = !known ? "CNR 测量无效，规则状态冻结" : matched ? "条件满足" : "条件不满足";
         annotation.ruleMatches.push_back(match);
         auto& ruleState = state.rules[rule.id];
+        if (!known) {
+            ruleState.continuityBroken = true;
+            continue;
+        }
+        const auto previousObservationNs = ruleState.lastObservationNs;
+        const bool continuous = !ruleState.continuityBroken && previousObservationNs > 0 &&
+            observationTime > previousObservationNs &&
+            m_currentIntervalContinuous && observationTime - previousObservationNs <= m_currentResultIntervalNs + 1;
+        const auto validDeltaNs = continuous ? observationTime - previousObservationNs : 0;
         ruleState.lastObservationNs = observationTime;
+        // A known observation after startup or a data gap becomes the anchor
+        // for the next continuous interval; only unknown observations keep the
+        // continuity break latched.
+        ruleState.continuityBroken = false;
         ruleState.lastMatched = matched;
         if (matched) {
             ruleState.pendingClear = false;
             ruleState.clearStartNs = 0;
+            ruleState.clearDurationNs = 0;
             if (!ruleState.active) {
-                if (ruleState.consecutiveHits == 0) ruleState.firstHitNs = observationTime;
+                if (ruleState.consecutiveHits == 0) {
+                    ruleState.firstHitNs = observationTime;
+                    ruleState.matchedDurationNs = 0;
+                } else if (validDeltaNs > 0) {
+                    ruleState.matchedDurationNs += validDeltaNs;
+                }
                 ++ruleState.consecutiveHits;
-                const double duration = ruleState.firstHitNs > 0
-                    ? static_cast<double>(observationTime - ruleState.firstHitNs) / 1e9 : 0.0;
+                const double duration = static_cast<double>(ruleState.matchedDurationNs) / 1e9;
                 if (ruleState.consecutiveHits >= rule.consecutiveHits &&
                     duration >= rule.minDurationSeconds) {
                     ruleState.active = true;
@@ -323,17 +377,23 @@ SignalAnnotation PolicyEngine::annotate(PolicySignal& policySignal,
             if (!ruleState.pendingClear) {
                 ruleState.pendingClear = true;
                 ruleState.clearStartNs = observationTime;
+                ruleState.clearDurationNs = 0;
+            } else if (validDeltaNs > 0) {
+                ruleState.clearDurationNs += validDeltaNs;
             }
-            const double clearDuration = static_cast<double>(observationTime - ruleState.clearStartNs) / 1e9;
+            const double clearDuration = static_cast<double>(ruleState.clearDurationNs) / 1e9;
             if (clearDuration >= rule.clearDelaySeconds) {
                 ruleState.active = false;
                 ruleState.pendingClear = false;
                 ruleState.consecutiveHits = 0;
                 ruleState.firstHitNs = 0;
+                ruleState.matchedDurationNs = 0;
+                ruleState.clearDurationNs = 0;
             }
         } else {
             ruleState.consecutiveHits = 0;
             ruleState.firstHitNs = 0;
+            ruleState.matchedDurationNs = 0;
         }
     }
     state.event.lastHitNs = observationTime;
@@ -349,7 +409,12 @@ void PolicyEngine::clearMissingSignals(const std::vector<SignalKey>& observed,
                                        const algorithm::DetectionResult& result,
                                        std::vector<AlarmEventChange>& changes)
 {
-    if (result.diagnostics.truncatedCount > 0) return;
+    if (result.diagnostics.truncatedCount > 0) {
+        for (auto& item : m_signals)
+            if (std::find(observed.begin(), observed.end(), item.first) == observed.end())
+                for (auto& ruleState : item.second.rules) ruleState.second.continuityBroken = true;
+        return;
+    }
     for (auto& item : m_signals) {
         if (std::find(observed.begin(), observed.end(), item.first) != observed.end()) continue;
         for (auto& ruleState : item.second.rules) {
@@ -360,17 +425,25 @@ void PolicyEngine::clearMissingSignals(const std::vector<SignalKey>& observed,
                 ruleState.second.pendingClear = false;
                 ruleState.second.consecutiveHits = 0;
                 ruleState.second.firstHitNs = 0;
+                ruleState.second.matchedDurationNs = 0;
                 continue;
             }
             if (!ruleState.second.pendingClear) {
                 ruleState.second.pendingClear = true;
                 ruleState.second.clearStartNs = result.timestampNs;
+                ruleState.second.clearDurationNs = 0;
+            } else if (!ruleState.second.continuityBroken && m_currentIntervalContinuous) {
+                ruleState.second.clearDurationNs += m_currentResultIntervalNs;
             }
-            if (static_cast<double>(result.timestampNs - ruleState.second.clearStartNs) / 1e9 >= rule->clearDelaySeconds) {
+            ruleState.second.lastObservationNs = result.timestampNs;
+            ruleState.second.continuityBroken = !m_currentIntervalContinuous;
+            if (static_cast<double>(ruleState.second.clearDurationNs) / 1e9 >= rule->clearDelaySeconds) {
                 ruleState.second.active = false;
                 ruleState.second.pendingClear = false;
                 ruleState.second.consecutiveHits = 0;
                 ruleState.second.firstHitNs = 0;
+                ruleState.second.matchedDurationNs = 0;
+                ruleState.second.clearDurationNs = 0;
             }
         }
         updateEventLevel(item.second, result.timestampNs, changes);
@@ -395,6 +468,10 @@ void PolicyEngine::reset(std::uint64_t generation, std::uint64_t segment,
     m_detectionConfigVersion = 0;
     m_trackingSegment = 0;
     m_segment = segment;
+    m_lastResultTimestampNs = 0;
+    m_currentResultIntervalNs = 0;
+    m_currentIntervalContinuous = false;
+    m_resultIntervalsNs.clear();
 }
 
 PolicySnapshot PolicyEngine::process(const algorithm::DetectionResult& result,
@@ -418,9 +495,61 @@ PolicySnapshot PolicyEngine::process(const algorithm::DetectionResult& result,
     snapshot.policyVersion = m_config.version;
     if (result.stage != algorithm::DetectionStage::Accumulating &&
         result.stage != algorithm::DetectionStage::Completed) return snapshot;
-    const auto policySignals = result.trackingApplied || !result.trackedDetections.empty()
-        ? m_resolver.resolve(result.trackedDetections, m_config.whitelists)
-        : m_resolver.resolve(result.detections, m_config.whitelists);
+    std::int64_t medianIntervalNs = 0;
+    if (!m_resultIntervalsNs.empty()) {
+        auto sortedIntervals = std::vector<std::int64_t>(m_resultIntervalsNs.begin(), m_resultIntervalsNs.end());
+        const auto middle = sortedIntervals.begin() + static_cast<std::ptrdiff_t>(sortedIntervals.size() / 2);
+        std::nth_element(sortedIntervals.begin(), middle, sortedIntervals.end());
+        medianIntervalNs = *middle;
+    }
+    const auto scaledMedian = medianIntervalNs > 0 &&
+        medianIntervalNs <= std::numeric_limits<std::int64_t>::max() / 3
+            ? medianIntervalNs * 3 : std::int64_t{1'000'000'000};
+    const auto maxIntervalNs = std::max<std::int64_t>(1'000'000'000, scaledMedian);
+    m_currentResultIntervalNs = m_lastResultTimestampNs > 0 &&
+        result.timestampNs > m_lastResultTimestampNs
+            ? result.timestampNs - m_lastResultTimestampNs : 0;
+    m_currentIntervalContinuous = m_currentResultIntervalNs > 0 &&
+                                  m_currentResultIntervalNs <= maxIntervalNs;
+    if (m_lastResultTimestampNs > 0 && result.timestampNs <= m_lastResultTimestampNs) {
+        m_resultIntervalsNs.clear();
+        m_currentIntervalContinuous = false;
+    } else if (m_currentIntervalContinuous) {
+        m_resultIntervalsNs.push_back(m_currentResultIntervalNs);
+        while (m_resultIntervalsNs.size() > 16) m_resultIntervalsNs.pop_front();
+    } else if (m_lastResultTimestampNs > 0) {
+        m_resultIntervalsNs.clear();
+    }
+    m_lastResultTimestampNs = result.timestampNs;
+    const auto policySignals = result.channelAggregationApplied
+        ? m_resolver.resolve(result.channelDetections, m_config.whitelists)
+        : result.trackingApplied || !result.trackedDetections.empty()
+            ? m_resolver.resolve(result.trackedDetections, m_config.whitelists)
+            : m_resolver.resolve(result.detections, m_config.whitelists);
+    for (const auto& signal : policySignals) {
+        const auto& predecessors = signal.source == PolicySignalSource::Whitelist
+            ? signal.originalSignalIds : signal.relatedChannelIds;
+        const std::string reason = signal.source == PolicySignalSource::Whitelist
+            ? "白名单归并" : signal.aggregate ? "信道归并" : "信道拆分";
+        for (const auto predecessorId : predecessors) {
+            for (auto it = m_signals.begin(); it != m_signals.end();) {
+                if (it->first.id != predecessorId ||
+                    (it->first.source == signal.source && it->first.id == signal.id)) {
+                    ++it;
+                    continue;
+                }
+                auto& event = it->second.event;
+                if (event.state != AlarmState::None) {
+                    event.state = AlarmState::None;
+                    event.currentLevel = AlarmLevel::None;
+                    event.endedNs = result.timestampNs;
+                    event.endReason = reason;
+                    emitChange(AlarmEventChange::Kind::Ended, event, changes);
+                }
+                it = m_signals.erase(it);
+            }
+        }
+    }
     std::vector<SignalKey> observed;
     observed.reserve(policySignals.size());
     snapshot.businessSignals = policySignals;

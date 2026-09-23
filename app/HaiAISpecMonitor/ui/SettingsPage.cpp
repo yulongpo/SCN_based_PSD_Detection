@@ -279,12 +279,25 @@ QWidget* SettingsPage::buildDisplayPage()
     form->setContentsMargins(22, 22, 22, 22);
     form->setVerticalSpacing(16);
     form->addRow(new QLabel(QStringLiteral("显示设置"), card));
+    const QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
     auto* grid = new QCheckBox(QStringLiteral("显示频谱网格线"), card);
     grid->setChecked(true);
     form->addRow(QStringLiteral("网格"), grid);
     auto* marker = new QCheckBox(QStringLiteral("显示信号标记和频率提示"), card);
     marker->setChecked(true);
     form->addRow(QStringLiteral("标记"), marker);
+    auto* temporaryMarker = new QCheckBox(QStringLiteral("显示暂时未观测信号的虚线框"), card);
+    temporaryMarker->setChecked(
+        settings.value(QStringLiteral("spectrum/showTemporarilyUnobservedMarkers"), true).toBool());
+    temporaryMarker->setToolTip(QStringLiteral(
+        "关闭后仅隐藏暂时未观测信号的淡色虚线框；正常检测标记、信号跟踪和告警逻辑不受影响。"));
+    form->addRow(QStringLiteral("暂时未观测标记"), temporaryMarker);
+    connect(temporaryMarker, &QCheckBox::toggled, this, [this](bool visible) {
+        QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+        settings.setValue(QStringLiteral("spectrum/showTemporarilyUnobservedMarkers"), visible);
+        settings.sync();
+        emit temporaryUnobservedMarkersChanged(visible);
+    });
     auto* maxHold = new QCheckBox(QStringLiteral("启用最大保持谱"), card);
     form->addRow(QStringLiteral("最大保持"), maxHold);
     auto* waterfall = new QCheckBox(QStringLiteral("显示瀑布图"), card);
@@ -298,7 +311,6 @@ QWidget* SettingsPage::buildDisplayPage()
     m_displayRate->setToolTip(QStringLiteral(
         "设置界面和会话结果发布频率；数据源采集频率由源参数单独控制。"));
     form->addRow(QStringLiteral("显示刷新"), m_displayRate);
-    const QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
     m_displayRate->setValue(settings.value(QStringLiteral("ui/displayRefreshRateHz"), 30).toInt());
     connect(m_displayRate, qOverload<int>(&QSpinBox::valueChanged), this, [this](int rateHz) {
         const int safeRateHz = std::clamp(rateHz, 1, 120);
@@ -448,6 +460,66 @@ QWidget* SettingsPage::buildDetectionPage()
     m_trackJumpBandwidthToleranceRatio = advancedDecimal(QStringLiteral("候选带宽比上限"), 1.0, 10.0, 2, 0.05);
     advancedGroup->setToolTip(QStringLiteral("频点网格容差仍固定为 2 个 bin；以下参数控制突变边界阈值和候选一致性。"));
     form->addRow(advancedGroup);
+
+    auto* aggregationGroup = new QGroupBox(QStringLiteral("宽带信道聚合"), card);
+    auto* aggregationForm = new QFormLayout(aggregationGroup);
+    auto* aggregationNote = new QLabel(QStringLiteral(
+        "将有持续占用证据支持的 SCN 碎片聚合为信道；先验只提供归属提示，不会单独触发检测或强制标称带宽。"),
+        aggregationGroup);
+    aggregationNote->setWordWrap(true);
+    aggregationForm->addRow(aggregationNote);
+    m_channelAggregationEnabled = new QCheckBox(QStringLiteral("启用占用证据与信道级聚合"), aggregationGroup);
+    aggregationForm->addRow(QStringLiteral("功能开关"), m_channelAggregationEnabled);
+    m_channelMaximumBandwidth = new FrequencySpinBox(aggregationGroup);
+    m_channelMaximumBandwidth->setRange(1.0, 6.4e9);
+    aggregationForm->addRow(QStringLiteral("最大自动聚合带宽"), m_channelMaximumBandwidth);
+    const auto aggregationDecimal = [aggregationGroup, aggregationForm](const QString& label,
+                                                                        double minimum, double maximum,
+                                                                        int decimals, double step) {
+        auto* value = new QDoubleSpinBox(aggregationGroup);
+        value->setRange(minimum, maximum);
+        value->setDecimals(decimals);
+        value->setSingleStep(step);
+        aggregationForm->addRow(label, value);
+        return value;
+    };
+    m_channelHighThreshold = aggregationDecimal(QStringLiteral("占用建立门限（高于噪底 dB）"), 0.1, 100.0, 2, 0.5);
+    m_channelLowThreshold = aggregationDecimal(QStringLiteral("占用延伸门限（高于噪底 dB）"), -100.0, 99.9, 2, 0.5);
+    m_channelMinimumSupport = aggregationDecimal(QStringLiteral("历史支持比例"), 0.001, 1.0, 3, 0.05);
+    m_channelMinimumCoverage = aggregationDecimal(QStringLiteral("聚合区域最小占用覆盖率"), 0.001, 1.0, 3, 0.05);
+    const auto aggregationInteger = [aggregationGroup, aggregationForm](const QString& label,
+                                                                         int minimum, int maximum) {
+        auto* value = new QSpinBox(aggregationGroup);
+        value->setRange(minimum, maximum);
+        aggregationForm->addRow(label, value);
+        return value;
+    };
+    m_channelMergeConfirmations = aggregationInteger(QStringLiteral("新聚合确认次数"), 2, 20);
+    m_channelSplitConfirmations = aggregationInteger(QStringLiteral("信道拆分确认次数"), 2, 40);
+    m_channelMissingConfirmations = aggregationInteger(QStringLiteral("可靠缺失确认次数"), 1, 20);
+    m_channelMissingHold = aggregationDecimal(QStringLiteral("漏检保持时间（秒）"), 0.0, 3600.0, 3, 0.1);
+    m_channelHistorySeconds = aggregationDecimal(QStringLiteral("占用证据最大时间跨度（秒）"), 0.05, 3600.0, 2, 0.1);
+    m_channelPriorTable = new QTableWidget(0, 5, aggregationGroup);
+    m_channelPriorTable->setHorizontalHeaderLabels({QStringLiteral("ID"), QStringLiteral("名称"),
+        QStringLiteral("起始频率"), QStringLiteral("终止频率"), QStringLiteral("启用")});
+    m_channelPriorTable->setColumnHidden(0, true);
+    m_channelPriorTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_channelPriorTable->verticalHeader()->setVisible(false);
+    m_channelPriorTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_channelPriorTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_channelPriorTable->setMaximumHeight(190);
+    auto* priorTools = new QHBoxLayout;
+    auto* addPrior = actionButton(QStringLiteral("新增信道先验"), aggregationGroup);
+    auto* removePrior = actionButton(QStringLiteral("删除所选先验"), aggregationGroup);
+    priorTools->addWidget(addPrior);
+    priorTools->addWidget(removePrior);
+    priorTools->addStretch();
+    aggregationForm->addRow(QStringLiteral("可选先验（频率支持单位输入）"), m_channelPriorTable);
+    aggregationForm->addRow(QString(), priorTools);
+    connect(addPrior, &QPushButton::clicked, this, &SettingsPage::addChannelPrior);
+    connect(removePrior, &QPushButton::clicked, this, &SettingsPage::removeChannelPrior);
+    form->addRow(aggregationGroup);
+
     m_maxSignals = integer(QStringLiteral("最大信号数"), 1, 65536);
     auto* apply = actionButton(QStringLiteral("应用 SCN 设置"), card);
     form->addRow(QString(), apply);
@@ -488,6 +560,33 @@ algorithm::DetectionConfig SettingsPage::detectionConfig() const
     c.tracker.jumpEdgeChangeRatio = m_trackJumpEdgeChangeRatio->value();
     c.tracker.jumpCenterToleranceRatio = m_trackJumpCenterToleranceRatio->value();
     c.tracker.jumpBandwidthToleranceRatio = m_trackJumpBandwidthToleranceRatio->value();
+    c.channelAggregation.enabled = m_channelAggregationEnabled->isChecked();
+    c.channelAggregation.maximumAutomaticBandwidthHz = m_channelMaximumBandwidth->frequencyHz();
+    c.channelAggregation.highThresholdDb = m_channelHighThreshold->value();
+    c.channelAggregation.lowThresholdDb = m_channelLowThreshold->value();
+    c.channelAggregation.minimumSupportRatio = m_channelMinimumSupport->value();
+    c.channelAggregation.minimumCoverageRatio = m_channelMinimumCoverage->value();
+    c.channelAggregation.mergeConfirmationCount = static_cast<std::uint32_t>(m_channelMergeConfirmations->value());
+    c.channelAggregation.splitConfirmationCount = static_cast<std::uint32_t>(m_channelSplitConfirmations->value());
+    c.channelAggregation.missingConfirmationCount = static_cast<std::uint32_t>(m_channelMissingConfirmations->value());
+    c.channelAggregation.missingHoldSeconds = m_channelMissingHold->value();
+    c.channelAggregation.historySeconds = m_channelHistorySeconds->value();
+    for (int row = 0; row < m_channelPriorTable->rowCount(); ++row) {
+        const auto* idItem = m_channelPriorTable->item(row, 0);
+        const auto* nameItem = m_channelPriorTable->item(row, 1);
+        const auto* startItem = m_channelPriorTable->item(row, 2);
+        const auto* endItem = m_channelPriorTable->item(row, 3);
+        const auto* enabledItem = m_channelPriorTable->item(row, 4);
+        algorithm::ChannelPrior prior;
+        prior.id = idItem ? idItem->data(Qt::UserRole).toLongLong() : 0;
+        prior.name = nameItem ? nameItem->text().trimmed().toStdString() : std::string{};
+        prior.enabled = enabledItem && enabledItem->checkState() == Qt::Checked;
+        if (!startItem || !FrequencySpinBox::parseFrequencyText(startItem->text(), prior.startFrequencyHz))
+            prior.startFrequencyHz = -1;
+        if (!endItem || !FrequencySpinBox::parseFrequencyText(endItem->text(), prior.endFrequencyHz))
+            prior.endFrequencyHz = -1;
+        c.channelAggregation.priors.push_back(std::move(prior));
+    }
     c.maxSignals = static_cast<std::size_t>(m_maxSignals->value());
     return c;
 }
@@ -520,6 +619,36 @@ void SettingsPage::setDetectionConfig(const algorithm::DetectionConfig& c)
     m_trackJumpEdgeChangeRatio->setValue(c.tracker.jumpEdgeChangeRatio);
     m_trackJumpCenterToleranceRatio->setValue(c.tracker.jumpCenterToleranceRatio);
     m_trackJumpBandwidthToleranceRatio->setValue(c.tracker.jumpBandwidthToleranceRatio);
+    m_channelAggregationEnabled->setChecked(c.channelAggregation.enabled);
+    m_channelMaximumBandwidth->setFrequencyHz(c.channelAggregation.maximumAutomaticBandwidthHz);
+    m_channelHighThreshold->setValue(c.channelAggregation.highThresholdDb);
+    m_channelLowThreshold->setValue(c.channelAggregation.lowThresholdDb);
+    m_channelMinimumSupport->setValue(c.channelAggregation.minimumSupportRatio);
+    m_channelMinimumCoverage->setValue(c.channelAggregation.minimumCoverageRatio);
+    m_channelMergeConfirmations->setValue(static_cast<int>(c.channelAggregation.mergeConfirmationCount));
+    m_channelSplitConfirmations->setValue(static_cast<int>(c.channelAggregation.splitConfirmationCount));
+    m_channelMissingConfirmations->setValue(static_cast<int>(c.channelAggregation.missingConfirmationCount));
+    m_channelMissingHold->setValue(c.channelAggregation.missingHoldSeconds);
+    m_channelHistorySeconds->setValue(c.channelAggregation.historySeconds);
+    m_channelPriorTable->setRowCount(static_cast<int>(c.channelAggregation.priors.size()));
+    for (int row = 0; row < m_channelPriorTable->rowCount(); ++row) {
+        const auto& prior = c.channelAggregation.priors[static_cast<std::size_t>(row)];
+        auto* id = new QTableWidgetItem;
+        id->setData(Qt::UserRole, static_cast<qlonglong>(prior.id));
+        auto* name = new QTableWidgetItem(QString::fromStdString(prior.name));
+        auto* start = new QTableWidgetItem(prior.startFrequencyHz >= 0
+            ? FrequencySpinBox::formatFrequency(prior.startFrequencyHz) : QString{});
+        auto* end = new QTableWidgetItem(prior.endFrequencyHz >= 0
+            ? FrequencySpinBox::formatFrequency(prior.endFrequencyHz) : QString{});
+        auto* enabled = new QTableWidgetItem;
+        enabled->setFlags(enabled->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+        enabled->setCheckState(prior.enabled ? Qt::Checked : Qt::Unchecked);
+        m_channelPriorTable->setItem(row, 0, id);
+        m_channelPriorTable->setItem(row, 1, name);
+        m_channelPriorTable->setItem(row, 2, start);
+        m_channelPriorTable->setItem(row, 3, end);
+        m_channelPriorTable->setItem(row, 4, enabled);
+    }
     m_maxSignals->setValue(static_cast<int>(c.maxSignals));
 }
 
@@ -557,6 +686,34 @@ void SettingsPage::loadDetectionConfig()
     c.tracker.jumpEdgeChangeRatio = settings.value(QStringLiteral("trackJumpEdgeChangeRatio"), 0.15).toDouble();
     c.tracker.jumpCenterToleranceRatio = settings.value(QStringLiteral("trackJumpCenterToleranceRatio"), 0.10).toDouble();
     c.tracker.jumpBandwidthToleranceRatio = settings.value(QStringLiteral("trackJumpBandwidthToleranceRatio"), 1.20).toDouble();
+    c.channelAggregation.enabled = settings.value(QStringLiteral("channelAggregationEnabled"), true).toBool();
+    if (!FrequencySpinBox::parseStoredFrequency(settings.value(QStringLiteral("channelMaximumBandwidthHz"),
+            static_cast<qlonglong>(c.channelAggregation.maximumAutomaticBandwidthHz)),
+            c.channelAggregation.maximumAutomaticBandwidthHz))
+        c.channelAggregation.maximumAutomaticBandwidthHz = 200'000'000;
+    c.channelAggregation.highThresholdDb = settings.value(QStringLiteral("channelHighThresholdDb"), 6.0).toDouble();
+    c.channelAggregation.lowThresholdDb = settings.value(QStringLiteral("channelLowThresholdDb"), 3.0).toDouble();
+    c.channelAggregation.minimumSupportRatio = settings.value(QStringLiteral("channelMinimumSupportRatio"), 0.20).toDouble();
+    c.channelAggregation.minimumCoverageRatio = settings.value(QStringLiteral("channelMinimumCoverageRatio"), 0.70).toDouble();
+    c.channelAggregation.mergeConfirmationCount = settings.value(QStringLiteral("channelMergeConfirmations"), 3).toUInt();
+    c.channelAggregation.splitConfirmationCount = settings.value(QStringLiteral("channelSplitConfirmations"), 5).toUInt();
+    c.channelAggregation.missingConfirmationCount = settings.value(QStringLiteral("channelMissingConfirmations"), 3).toUInt();
+    c.channelAggregation.missingHoldSeconds = settings.value(QStringLiteral("channelMissingHoldSeconds"), 0.5).toDouble();
+    c.channelAggregation.historySeconds = settings.value(QStringLiteral("channelHistorySeconds"), 2.0).toDouble();
+    const int priorCount = settings.beginReadArray(QStringLiteral("channelPriors"));
+    for (int index = 0; index < priorCount; ++index) {
+        settings.setArrayIndex(index);
+        algorithm::ChannelPrior prior;
+        prior.id = settings.value(QStringLiteral("id"), index + 1).toLongLong();
+        prior.name = settings.value(QStringLiteral("name")).toString().toStdString();
+        prior.enabled = settings.value(QStringLiteral("enabled"), true).toBool();
+        if (!FrequencySpinBox::parseStoredFrequency(settings.value(QStringLiteral("startHz"), -1), prior.startFrequencyHz))
+            prior.startFrequencyHz = -1;
+        if (!FrequencySpinBox::parseStoredFrequency(settings.value(QStringLiteral("endHz"), -1), prior.endFrequencyHz))
+            prior.endFrequencyHz = -1;
+        c.channelAggregation.priors.push_back(std::move(prior));
+    }
+    settings.endArray();
     c.maxSignals = settings.value(QStringLiteral("maxSignals"), 4096).toULongLong();
     std::string error;
     if (!algorithm::validateConfig(c, error)) {
@@ -596,6 +753,29 @@ void SettingsPage::saveDetectionConfig(const algorithm::DetectionConfig& c) cons
     settings.setValue(QStringLiteral("trackJumpEdgeChangeRatio"), c.tracker.jumpEdgeChangeRatio);
     settings.setValue(QStringLiteral("trackJumpCenterToleranceRatio"), c.tracker.jumpCenterToleranceRatio);
     settings.setValue(QStringLiteral("trackJumpBandwidthToleranceRatio"), c.tracker.jumpBandwidthToleranceRatio);
+    settings.setValue(QStringLiteral("channelAggregationEnabled"), c.channelAggregation.enabled);
+    settings.setValue(QStringLiteral("channelMaximumBandwidthHz"),
+                      static_cast<qlonglong>(c.channelAggregation.maximumAutomaticBandwidthHz));
+    settings.setValue(QStringLiteral("channelHighThresholdDb"), c.channelAggregation.highThresholdDb);
+    settings.setValue(QStringLiteral("channelLowThresholdDb"), c.channelAggregation.lowThresholdDb);
+    settings.setValue(QStringLiteral("channelMinimumSupportRatio"), c.channelAggregation.minimumSupportRatio);
+    settings.setValue(QStringLiteral("channelMinimumCoverageRatio"), c.channelAggregation.minimumCoverageRatio);
+    settings.setValue(QStringLiteral("channelMergeConfirmations"), c.channelAggregation.mergeConfirmationCount);
+    settings.setValue(QStringLiteral("channelSplitConfirmations"), c.channelAggregation.splitConfirmationCount);
+    settings.setValue(QStringLiteral("channelMissingConfirmations"), c.channelAggregation.missingConfirmationCount);
+    settings.setValue(QStringLiteral("channelMissingHoldSeconds"), c.channelAggregation.missingHoldSeconds);
+    settings.setValue(QStringLiteral("channelHistorySeconds"), c.channelAggregation.historySeconds);
+    settings.beginWriteArray(QStringLiteral("channelPriors"), static_cast<int>(c.channelAggregation.priors.size()));
+    for (int index = 0; index < static_cast<int>(c.channelAggregation.priors.size()); ++index) {
+        const auto& prior = c.channelAggregation.priors[static_cast<std::size_t>(index)];
+        settings.setArrayIndex(index);
+        settings.setValue(QStringLiteral("id"), static_cast<qlonglong>(prior.id));
+        settings.setValue(QStringLiteral("name"), QString::fromStdString(prior.name));
+        settings.setValue(QStringLiteral("enabled"), prior.enabled);
+        settings.setValue(QStringLiteral("startHz"), static_cast<qlonglong>(prior.startFrequencyHz));
+        settings.setValue(QStringLiteral("endHz"), static_cast<qlonglong>(prior.endFrequencyHz));
+    }
+    settings.endArray();
     settings.setValue(QStringLiteral("maxSignals"), static_cast<qulonglong>(c.maxSignals));
     settings.sync();
 }
@@ -915,6 +1095,37 @@ void SettingsPage::removeWhitelist()
     if (row < 0) return;
     m_whitelistTable->removeRow(row);
     appendLog(QStringLiteral("删除一条白名单。"));
+}
+
+void SettingsPage::addChannelPrior()
+{
+    std::int64_t nextId = 1;
+    for (int row = 0; row < m_channelPriorTable->rowCount(); ++row) {
+        if (const auto* item = m_channelPriorTable->item(row, 0))
+            nextId = std::max(nextId, item->data(Qt::UserRole).toLongLong() + 1);
+    }
+    const int row = m_channelPriorTable->rowCount();
+    m_channelPriorTable->insertRow(row);
+    auto* id = new QTableWidgetItem;
+    id->setData(Qt::UserRole, static_cast<qlonglong>(nextId));
+    auto* name = new QTableWidgetItem(QStringLiteral("信道 %1").arg(nextId));
+    auto* start = new QTableWidgetItem;
+    auto* end = new QTableWidgetItem;
+    auto* enabled = new QTableWidgetItem;
+    enabled->setFlags(enabled->flags() | Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+    enabled->setCheckState(Qt::Checked);
+    m_channelPriorTable->setItem(row, 0, id);
+    m_channelPriorTable->setItem(row, 1, name);
+    m_channelPriorTable->setItem(row, 2, start);
+    m_channelPriorTable->setItem(row, 3, end);
+    m_channelPriorTable->setItem(row, 4, enabled);
+    m_channelPriorTable->selectRow(row);
+}
+
+void SettingsPage::removeChannelPrior()
+{
+    const int row = m_channelPriorTable->currentRow();
+    if (row >= 0) m_channelPriorTable->removeRow(row);
 }
 
 policy::PolicyConfig SettingsPage::policyConfig(QString* error) const

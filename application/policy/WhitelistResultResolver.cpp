@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <string>
 #include <unordered_map>
+#include <cstdint>
 
 namespace scn::application::policy
 {
@@ -119,6 +120,105 @@ std::vector<PolicySignal> WhitelistResultResolver::resolve(
         policySignal.associationBandwidthRatio = source.bandwidthRatio;
         policySignal.boundaryDiagnostic = source.diagnostic;
         policySignal.hasBoundaryMetadata = true;
+    }
+    return resolved;
+}
+
+std::vector<PolicySignal> WhitelistResultResolver::resolve(
+    const std::vector<algorithm::DetectionResult::ChannelDetection>& channels,
+    const std::vector<WhitelistEntry>& whitelists) const
+{
+    std::vector<PolicySignal> resolved;
+    std::vector<bool> replaced(channels.size(), false);
+    const auto attachChannel = [](PolicySignal& target,
+                                  const algorithm::DetectionResult::ChannelDetection& channel) {
+        target.rawMeasurement = channel.raw;
+        target.stableMeasurement = channel.stable;
+        target.boundaryState = channel.boundaryState;
+        target.measurementBranch = channel.stable.branch;
+        target.hasBoundaryMetadata = true;
+        target.observationState = channel.observationState;
+        target.aggregate = channel.aggregate;
+        target.measurementValid = channel.measurementValid;
+        target.priorName = channel.priorName;
+        target.contributors = channel.contributors;
+        target.relatedChannelIds = channel.relatedChannelIds;
+    };
+
+    for (const auto& whitelist : whitelists) {
+        if (!whitelist.enabled) continue;
+        std::vector<std::size_t> observedMatches;
+        std::vector<std::size_t> unknownMatches;
+        for (std::size_t index = 0; index < channels.size(); ++index) {
+            const auto& channel = channels[index];
+            if (!intervalsOverlap(channel.stable.startFrequencyHz, channel.stable.endFrequencyHz,
+                                  whitelist.startFrequencyHz, whitelist.endFrequencyHz)) continue;
+            replaced[index] = true;
+            (channel.observationState == algorithm::ObservationState::Observed
+                ? observedMatches : unknownMatches).push_back(index);
+        }
+        const auto& matches = observedMatches.empty() ? unknownMatches : observedMatches;
+        if (matches.empty()) continue;
+        const auto representative = *std::min_element(matches.begin(), matches.end(), [&](auto lhs, auto rhs) {
+            return stronger(channels[lhs].stable, channels[rhs].stable);
+        });
+        const auto& source = channels[representative];
+        PolicySignal signal;
+        signal.source = PolicySignalSource::Whitelist;
+        signal.id = whitelist.id;
+        signal.displayId = "W-" + std::to_string(whitelist.id);
+        signal.measurement = source.stable;
+        signal.measurement.id = whitelist.id;
+        signal.measurement.startFrequencyHz = static_cast<double>(whitelist.startFrequencyHz);
+        signal.measurement.endFrequencyHz = static_cast<double>(whitelist.endFrequencyHz);
+        signal.measurement.centerFrequencyHz =
+            (static_cast<double>(whitelist.startFrequencyHz) +
+             static_cast<double>(whitelist.endFrequencyHz)) * 0.5;
+        signal.measurement.bandwidthHz = static_cast<double>(whitelist.endFrequencyHz) -
+                                         static_cast<double>(whitelist.startFrequencyHz);
+        signal.representativeSignalId = source.stable.id;
+        signal.originalSignalIds.reserve(matches.size());
+        for (const auto index : matches) {
+            signal.originalSignalIds.push_back(channels[index].stable.id);
+            signal.contributors.insert(signal.contributors.end(), channels[index].contributors.begin(),
+                                       channels[index].contributors.end());
+        }
+        std::sort(signal.originalSignalIds.begin(), signal.originalSignalIds.end());
+        signal.originalSignalIds.erase(std::unique(signal.originalSignalIds.begin(),
+                                                   signal.originalSignalIds.end()),
+                                       signal.originalSignalIds.end());
+        signal.whitelistIds.push_back(whitelist.id);
+        signal.whitelistNames.push_back(whitelist.name);
+        attachChannel(signal, source);
+        signal.measurement.id = whitelist.id;
+        signal.measurement.startFrequencyHz = static_cast<double>(whitelist.startFrequencyHz);
+        signal.measurement.endFrequencyHz = static_cast<double>(whitelist.endFrequencyHz);
+        signal.measurement.centerFrequencyHz =
+            (static_cast<double>(whitelist.startFrequencyHz) +
+             static_cast<double>(whitelist.endFrequencyHz)) * 0.5;
+        signal.measurement.bandwidthHz = static_cast<double>(whitelist.endFrequencyHz) -
+                                         static_cast<double>(whitelist.startFrequencyHz);
+        signal.observationState = observedMatches.empty()
+            ? algorithm::ObservationState::TemporarilyUnobserved
+            : algorithm::ObservationState::Observed;
+        resolved.push_back(std::move(signal));
+    }
+
+    for (std::size_t index = 0; index < channels.size(); ++index) {
+        if (replaced[index]) continue;
+        const auto& channel = channels[index];
+        PolicySignal signal;
+        signal.source = PolicySignalSource::RawDetection;
+        signal.id = channel.stable.id;
+        const auto magnitude = channel.stable.id < 0
+            ? static_cast<std::uint64_t>(-(channel.stable.id + 1)) + 1
+            : static_cast<std::uint64_t>(channel.stable.id);
+        signal.displayId = "C-" + std::to_string(magnitude);
+        signal.measurement = channel.stable;
+        signal.representativeSignalId = channel.stable.id;
+        signal.originalSignalIds.push_back(channel.stable.id);
+        attachChannel(signal, channel);
+        resolved.push_back(std::move(signal));
     }
     return resolved;
 }

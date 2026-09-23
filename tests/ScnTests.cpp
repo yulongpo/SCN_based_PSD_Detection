@@ -2,12 +2,14 @@
 #include "../algorithm/preprocess/SpectrumPreprocessor.h"
 #include "../algorithm/refine/CnrRefiner.h"
 #include "../algorithm/fusion/SignalFusion.h"
+#include "../algorithm/aggregation/ChannelAggregator.h"
 #include "../algorithm/detector/ScnSha256.h"
 #include "../application/SessionPipeline.h"
 #include "../source/FileSource/FileSource.h"
 #include "../runtime/BoundedChannel.h"
 #include "../common/Frequency.h"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -295,6 +297,161 @@ void channelTests()
     CHECK(queue.waitPop(value, [] { return false; }) && value == 3);
     auto pending = std::async(std::launch::async, [&] { int next; return queue.waitPop(next, [] { return false; }); });
     queue.close(); CHECK(pending.wait_for(std::chrono::seconds(2)) == std::future_status::ready && !pending.get());
+
+    const auto makeFrame = [](std::uint64_t sequence, bool broadCarrier, bool persistentGap = false) {
+        SpectrumFrame value;
+        value.sequence = sequence;
+        value.timestampNs = static_cast<std::int64_t>(sequence) * 100'000'000;
+        value.startFrequencyHz = 0.0;
+        value.binWidthHz = 10'000.0;
+        value.resolutionBandwidthHz = 50'000.0;
+        value.referenceLevelDbm = -20.0;
+        value.sourceName = "SYNTHETIC";
+        value.powerDb.assign(2000, -100.0F);
+        if (broadCarrier) {
+            std::fill(value.powerDb.begin() + 500, value.powerDb.begin() + 650, -65.0F);
+            if (persistentGap)
+                std::fill(value.powerDb.begin() + 560, value.powerDb.begin() + 590, -100.0F);
+        }
+        return value;
+    };
+    const auto makeCandidates = [](bool splitGap = false) {
+        const float cnr = 35.0F;
+        auto first = signal(5'000'000.0, splitGap ? 5'600'000.0 : 5'700'000.0);
+        first.signalLevelDbm = -65.0F; first.noiseLevelDbm = -100.0F; first.snrDb = cnr;
+        auto second = signal(splitGap ? 5'900'000.0 : 5'800'000.0, 6'500'000.0);
+        second.signalLevelDbm = -65.0F; second.noiseLevelDbm = -100.0F; second.snrDb = cnr;
+        return std::vector<scn::algorithm::ChannelCandidate>{{first, true}, {second, true}};
+    };
+    const auto makeTracked = [](std::uint64_t sequence) {
+        std::vector<DetectionResult::TrackedDetection> tracked(2);
+        const std::array<std::pair<double, double>, 2> ranges{{{5'000'000.0, 5'700'000.0},
+                                                              {5'800'000.0, 6'500'000.0}}};
+        for (std::size_t i = 0; i < tracked.size(); ++i) {
+            tracked[i].raw = signal(ranges[i].first, ranges[i].second);
+            tracked[i].stable = tracked[i].raw;
+            tracked[i].stable.id = tracked[i].raw.id = static_cast<std::int64_t>(100 + i);
+            tracked[i].stable.firstSeenNs = tracked[i].raw.firstSeenNs = 100'000'000;
+            tracked[i].stable.lastSeenNs = tracked[i].raw.lastSeenNs = static_cast<std::int64_t>(sequence) * 100'000'000;
+            tracked[i].stable.occurrenceCount = tracked[i].raw.occurrenceCount = sequence;
+        }
+        return tracked;
+    };
+
+    ChannelAggregationConfig aggregateConfig;
+    aggregateConfig.mergeConfirmationCount = 3;
+    ChannelAggregator aggregator;
+    std::vector<DetectionResult::ChannelDetection> channels;
+    ChannelEvidence evidence;
+    std::int64_t aggregateId = 0;
+    std::uint64_t aggregateOccurrences = 0;
+    for (std::uint64_t sequence = 1; sequence <= 4; ++sequence) {
+        const auto current = makeFrame(sequence, true);
+        CHECK(aggregator.update(current, current.powerDb, current.powerDb, makeCandidates(),
+            makeTracked(sequence), aggregateConfig, 3.0F, true, channels, &evidence));
+        if (sequence < 4)
+            CHECK(std::none_of(channels.begin(), channels.end(), [](const auto& channel) { return channel.aggregate; }));
+        else {
+            CHECK(channels.size() == 1 && channels.front().aggregate);
+            CHECK(channels.front().observationState == ObservationState::Observed);
+            CHECK(channels.front().stable.startFrequencyHz == 5'000'000.0);
+            CHECK(channels.front().stable.endFrequencyHz == 6'500'000.0);
+            CHECK(channels.front().contributors.size() == 2);
+            CHECK(!channels.front().relatedChannelIds.empty());
+            CHECK(channels.front().measurementValid && channels.front().stable.snrDb > 20.0F);
+            aggregateId = channels.front().stable.id;
+            aggregateOccurrences = channels.front().stable.occurrenceCount;
+        }
+    }
+    CHECK(evidence.historyRows == 4 && evidence.known.size() == evidence.occupied.size());
+    CHECK(std::any_of(evidence.occupied.begin() + 100, evidence.occupied.begin() + 140,
+                      [](std::uint8_t value) { return value != 0; }));
+    CHECK(std::any_of(evidence.groupingDiagnostics.begin(), evidence.groupingDiagnostics.end(),
+        [](const auto& item) { return item.disposition == "confirmed_new_channel" && item.resultingChannelId < 0; }));
+
+    // Stale candidates from a sliding maximum cannot keep an absent carrier
+    // confirmed when the current raw PSD contains only the noise floor.
+    const auto staleCandidateFrame = makeFrame(5, false);
+    ChannelEvidence staleEvidence;
+    CHECK(aggregator.update(staleCandidateFrame, staleCandidateFrame.powerDb,
+        staleCandidateFrame.powerDb, makeCandidates(), makeTracked(5), aggregateConfig,
+        3.0F, true, channels, &staleEvidence));
+    CHECK(channels.size() == 1 && channels.front().stable.id == aggregateId &&
+          channels.front().observationState == ObservationState::TemporarilyUnobserved &&
+          channels.front().stable.occurrenceCount == aggregateOccurrences);
+    CHECK(std::any_of(staleEvidence.groupingDiagnostics.begin(), staleEvidence.groupingDiagnostics.end(),
+        [](const auto& item) { return item.disposition == "current_raw_psd_does_not_support_occupancy"; }));
+
+    // Unknown input freezes miss counters and cannot age an aggregate away.
+    auto uncertainFrame = makeFrame(6, false);
+    CHECK(aggregator.update(uncertainFrame, uncertainFrame.powerDb, uncertainFrame.powerDb, {}, {},
+        aggregateConfig, 3.0F, false, channels));
+    CHECK(channels.size() == 1 && channels.front().stable.id == aggregateId &&
+          channels.front().observationState == ObservationState::TemporarilyUnobserved);
+    auto afterUnknown = makeFrame(7, false);
+    CHECK(aggregator.update(afterUnknown, afterUnknown.powerDb, afterUnknown.powerDb, {}, {},
+        aggregateConfig, 3.0F, true, channels));
+    CHECK(channels.size() == 1 && channels.front().stable.id == aggregateId &&
+          channels.front().observationState == ObservationState::TemporarilyUnobserved);
+
+    // A persistent low-noise divider is not bridged into one channel.
+    ChannelAggregator separated;
+    auto separatedCandidates = makeCandidates(true);
+    ChannelEvidence separatedEvidence;
+    for (std::uint64_t sequence = 1; sequence <= 8; ++sequence) {
+        const auto current = makeFrame(sequence, true, true);
+        CHECK(separated.update(current, current.powerDb, current.powerDb, separatedCandidates, {},
+            aggregateConfig, 3.0F, true, channels, &separatedEvidence));
+        CHECK(std::none_of(channels.begin(), channels.end(), [](const auto& channel) { return channel.aggregate; }));
+    }
+    CHECK(std::any_of(separatedEvidence.groupingDiagnostics.begin(), separatedEvidence.groupingDiagnostics.end(),
+        [](const auto& item) { return item.disposition == "persistent_low_occupancy_gap"; }));
+
+    ChannelAggregator splitAggregator;
+    std::int64_t splitParentId = 0;
+    for (std::uint64_t sequence = 1; sequence <= 4; ++sequence) {
+        const auto current = makeFrame(sequence, true);
+        CHECK(splitAggregator.update(current, current.powerDb, current.powerDb, makeCandidates(),
+            makeTracked(sequence), aggregateConfig, 3.0F, true, channels));
+        if (sequence == 4) {
+            CHECK(channels.size() == 1 && channels.front().aggregate);
+            splitParentId = channels.front().stable.id;
+        }
+    }
+    bool splitConfirmed = false;
+    ChannelEvidence splitEvidence;
+    for (std::uint64_t sequence = 5; sequence <= 14; ++sequence) {
+        const auto current = makeFrame(sequence, true, true);
+        CHECK(splitAggregator.update(current, current.powerDb, current.powerDb, makeCandidates(true),
+            makeTracked(sequence), aggregateConfig, 3.0F, true, channels, &splitEvidence));
+        const auto children = std::count_if(channels.begin(), channels.end(), [&](const auto& channel) {
+            return !channel.aggregate && std::find(channel.relatedChannelIds.begin(),
+                channel.relatedChannelIds.end(), splitParentId) != channel.relatedChannelIds.end();
+        });
+        if (children >= 2) { splitConfirmed = true; break; }
+    }
+    CHECK(splitConfirmed);
+
+    ChannelAggregator disappearanceAggregator;
+    for (std::uint64_t sequence = 1; sequence <= 4; ++sequence) {
+        const auto current = makeFrame(sequence, true);
+        CHECK(disappearanceAggregator.update(current, current.powerDb, current.powerDb, makeCandidates(),
+            makeTracked(sequence), aggregateConfig, 3.0F, true, channels));
+    }
+    CHECK(channels.size() == 1 && channels.front().aggregate);
+    for (std::uint64_t sequence = 5; sequence <= 10; ++sequence) {
+        const auto current = makeFrame(sequence, false);
+        CHECK(disappearanceAggregator.update(current, current.powerDb, current.powerDb, {}, {},
+            aggregateConfig, 3.0F, true, channels));
+    }
+    CHECK(channels.empty());
+
+    // Cancellation is transactional: no proposal or history becomes visible.
+    ChannelAggregator cancelledAggregator;
+    const auto cancelledFrame = makeFrame(1, true);
+    CHECK(!cancelledAggregator.update(cancelledFrame, cancelledFrame.powerDb, cancelledFrame.powerDb,
+        makeCandidates(), {}, aggregateConfig, 3.0F, true, channels, nullptr, [] { return true; }));
+    CHECK(channels.empty());
 }
 void pipelineTests()
 {
@@ -330,7 +487,7 @@ void pipelineTests()
     CHECK(pipeline.configureDetection({}) == ConfigApplyResult::Applied && pipeline.configVersion == version);
     CHECK(pipeline.drained(epoch));
     auto threshold = DetectionConfig{}; threshold.refine.cnrThresholdDb = 4;
-    CHECK(pipeline.configureDetection(threshold) == ConfigApplyResult::Applied);
+    CHECK(pipeline.configureDetection(threshold) == ConfigApplyResult::RequiresReset);
     CHECK(pipeline.drained(epoch)); // EOF completion survives display-result invalidation.
     { std::lock_guard<std::mutex> lock(pipeline.mutex); CHECK(!pipeline.latestResult); }
     const auto appliedVersion = pipeline.configVersion.load();

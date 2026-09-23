@@ -42,6 +42,8 @@ public:
     void drawImage(const QImage& image, const QRectF& destination);
     void drawText(const QString& text, const QRectF& rect, const QColor& color,
                   float fontSize, Qt::Alignment alignment = Qt::AlignLeft);
+    void drawVerticalText(const QString& text, const QRectF& visualRect, const QColor& color,
+                         float fontSize);
 
 private:
     struct NativeState;

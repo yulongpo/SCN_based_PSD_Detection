@@ -178,6 +178,51 @@ int main()
     truncated.diagnostics.truncatedCount = 1;
     snapshot = engine.process(truncated, changes);
     CHECK(snapshot.activeEventCount == 1);
+
+    PolicyConfig channelPolicy;
+    AlarmRule channelRule;
+    channelRule.id = 41; channelRule.name = "channel alarm";
+    channelRule.startFrequencyHz = 100; channelRule.endFrequencyHz = 200;
+    channelRule.level = AlarmLevel::Critical; channelPolicy.alarmRules.push_back(channelRule);
+    PolicyEngine channelEngine;
+    CHECK(channelEngine.setConfig(channelPolicy, error));
+    const auto channelObservation = [](std::int64_t timestamp, scn::algorithm::ObservationState observation) {
+        auto value = result(timestamp, {});
+        value.channelAggregationApplied = true;
+        DetectionResult::ChannelDetection item;
+        item.raw = signal(100, 200, -1, -35.0F);
+        item.stable = item.raw;
+        item.aggregate = true;
+        item.observationState = observation;
+        value.channelDetections.push_back(item);
+        return value;
+    };
+    changes.clear();
+    auto channelSnapshot = channelEngine.process(channelObservation(8000000000,
+        scn::algorithm::ObservationState::Observed), changes);
+    CHECK(channelSnapshot.businessSignals.size() == 1 && channelSnapshot.activeCriticalCount == 1);
+    CHECK(channelSnapshot.businessSignals[0].displayId == "C-1");
+    const auto heldEventId = channelSnapshot.annotations[0].eventId;
+    changes.clear();
+    channelSnapshot = channelEngine.process(channelObservation(8100000000,
+        scn::algorithm::ObservationState::TemporarilyUnobserved), changes);
+    CHECK(channelSnapshot.activeCriticalCount == 1 && changes.empty());
+    CHECK(channelSnapshot.annotations[0].observationState == scn::algorithm::ObservationState::TemporarilyUnobserved);
+    CHECK(!channelSnapshot.annotations[0].ruleMatches[0].known);
+    CHECK(channelSnapshot.annotations[0].eventId == heldEventId);
+    auto mergedChannel = channelObservation(8200000000,
+        scn::algorithm::ObservationState::Observed);
+    mergedChannel.channelDetections[0].raw.id = -2;
+    mergedChannel.channelDetections[0].stable.id = -2;
+    mergedChannel.channelDetections[0].relatedChannelIds.push_back(-1);
+    changes.clear();
+    channelSnapshot = channelEngine.process(mergedChannel, changes);
+    CHECK(channelSnapshot.businessSignals.size() == 1 && channelSnapshot.businessSignals[0].id == -2);
+    CHECK(channelSnapshot.activeCriticalCount == 1);
+    CHECK(std::any_of(changes.begin(), changes.end(), [&](const auto& item) {
+        return item.kind == AlarmEventChange::Kind::Ended && item.event.eventId == heldEventId &&
+               item.event.endReason == "信道归并";
+    }));
     std::cout << "policy tests passed\n";
     return 0;
     } catch (const std::exception& error) {

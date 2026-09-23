@@ -4,6 +4,7 @@
 #include "WhitelistResultResolver.h"
 
 #include <chrono>
+#include <deque>
 #include <map>
 #include <optional>
 
@@ -33,9 +34,12 @@ private:
         std::int64_t firstHitNs = 0;
         std::int64_t lastObservationNs = 0;
         std::int64_t clearStartNs = 0;
+        std::int64_t matchedDurationNs = 0;
+        std::int64_t clearDurationNs = 0;
         bool active = false;
         bool pendingClear = false;
         bool lastMatched = false;
+        bool continuityBroken = false;
         std::string eventId;
     };
 
@@ -87,6 +91,10 @@ private:
     std::uint64_t m_segment = 0;
     std::uint64_t m_revision = 0;
     std::uint64_t m_nextEventId = 1;
+    std::int64_t m_lastResultTimestampNs = 0;
+    std::int64_t m_currentResultIntervalNs = 0;
+    bool m_currentIntervalContinuous = false;
+    std::deque<std::int64_t> m_resultIntervalsNs;
     std::map<SignalKey, SignalState> m_signals;
     WhitelistResultResolver m_resolver;
 };

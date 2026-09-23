@@ -52,11 +52,13 @@ public:
     bool maxSpectrumVisible() const noexcept;
     bool averageSpectrumVisible() const noexcept;
     bool detectionMarkersVisible() const noexcept;
+    bool temporarilyUnobservedMarkersVisible() const noexcept;
 
     void setRealtimeSpectrumVisible(bool visible);
     void setMaxSpectrumVisible(bool visible);
     void setAverageSpectrumVisible(bool visible);
     void setDetectionMarkersVisible(bool visible);
+    void setTemporarilyUnobservedMarkersVisible(bool visible);
 
 signals:
     void viewRangeChanged(double startHz, double endHz);
@@ -158,6 +160,7 @@ private:
     bool m_showMaxSpectrum = false;
     bool m_showAverageSpectrum = false;
     bool m_showDetectionMarkers = true;
+    bool m_showTemporarilyUnobservedMarkers = true;
     Direct2DChartRenderer m_direct2D;
 };
 

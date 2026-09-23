@@ -269,6 +269,8 @@ MainWindow::MainWindow(application::MonitoringSession& session,
                 m_waterfall->setDynamicRangeDb(rangeDb);
                 statusBar()->showMessage(QStringLiteral("显示动态范围已应用。"), 3000);
             });
+    connect(m_settingsPage, &SettingsPage::temporaryUnobservedMarkersChanged,
+            m_spectrum, &SpectrumWidget::setTemporarilyUnobservedMarkersVisible);
     connect(m_settingsPage, &SettingsPage::detectionApplyRequested,
             this, [this] { (void)applyDetectionConfiguration(); });
     connect(m_settingsPage, &SettingsPage::policyApplyRequested,
@@ -695,13 +697,13 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
                                 QStringLiteral("#E63E3E"), m_criticalAlertLabel, metricsPanel);
     auto* general = metricCard(QStringLiteral(":/collect/general_alarm.png"), QStringLiteral("一般警告"),
                                QStringLiteral("#FFBA00"), m_generalAlarmLabel, metricsPanel);
-    auto* total = metricCard(QStringLiteral(":/collect/signal_total.png"), QStringLiteral("信号总数"),
+    auto* total = metricCard(QStringLiteral(":/collect/signal_total.png"), QStringLiteral("观测 / 待确认"),
                              QStringLiteral("#0A8CFE"), m_signalTotalLabel, metricsPanel);
     m_criticalAlertLabel->setText(QStringLiteral("0"));
     m_generalAlarmLabel->setText(QStringLiteral("0"));
     critical->setToolTip(QStringLiteral("当前活动的严重告警事件数。告警等级由规则决定，不由 SCN 置信度自动映射。"));
     general->setToolTip(QStringLiteral("当前活动的一般告警事件数。"));
-    total->setToolTip(QStringLiteral("最新检测结果中的观测信号数。"));
+    total->setToolTip(QStringLiteral("当前有效观测数 / 因数据不确定而暂存的信道数；暂存项不增加出现次数或新建告警。"));
     metrics->addWidget(critical, 1);
     metrics->addWidget(general, 1);
     metrics->addWidget(total, 1);
@@ -1187,6 +1189,8 @@ void MainWindow::loadUiState()
         settings.value(QStringLiteral("spectrum/showAverageSpectrum"), false).toBool());
     m_spectrum->setDetectionMarkersVisible(
         settings.value(QStringLiteral("spectrum/showDetectionMarkers"), true).toBool());
+    m_spectrum->setTemporarilyUnobservedMarkersVisible(
+        settings.value(QStringLiteral("spectrum/showTemporarilyUnobservedMarkers"), true).toBool());
 
     const QString filePath = m_filePath->text().trimmed();
     if (savedSourceKind == static_cast<int>(algorithm::SourceKind::File) &&
@@ -1618,8 +1622,15 @@ void MainWindow::updateMonitorMetrics(const algorithm::DisplaySnapshot& snapshot
     if (!policyUsable) return;
     m_criticalAlertLabel->setText(QString::number(static_cast<qulonglong>(m_policySnapshot->activeCriticalCount)));
     m_generalAlarmLabel->setText(QString::number(static_cast<qulonglong>(m_policySnapshot->activeGeneralCount)));
-    const auto count = m_policySnapshot->businessSignals.size();
-    m_signalTotalLabel->setText(QString::number(static_cast<qulonglong>(count)));
+    const auto observedCount = static_cast<std::size_t>(std::count_if(
+        m_policySnapshot->businessSignals.begin(), m_policySnapshot->businessSignals.end(),
+        [](const policy::PolicySignal& signal) {
+            return signal.observationState == algorithm::ObservationState::Observed;
+        }));
+    const auto pendingCount = m_policySnapshot->businessSignals.size() - observedCount;
+    m_signalTotalLabel->setText(QStringLiteral("%1 / %2")
+        .arg(static_cast<qulonglong>(observedCount))
+        .arg(static_cast<qulonglong>(pendingCount)));
 }
 
 void MainWindow::updateDetectionStatus(const algorithm::DisplaySnapshot* snapshot)
@@ -1679,6 +1690,11 @@ void MainWindow::updateDetectionStatus(const algorithm::DisplaySnapshot* snapsho
             .arg(diagnostics.accumulationTimeMs, 0, 'f', 1)
             .arg(diagnostics.inferenceTimeMs, 0, 'f', 1)
             .arg(diagnostics.postprocessTimeMs, 0, 'f', 1),
+        QStringLiteral("信道聚合：%1 ms | 已观测聚合：%2 | 待确认／不确定：%3 | 候选筛除：%4")
+            .arg(diagnostics.channelAggregationTimeMs, 0, 'f', 1)
+            .arg(static_cast<qulonglong>(diagnostics.aggregateCount))
+            .arg(static_cast<qulonglong>(diagnostics.pendingChannelCount))
+            .arg(static_cast<qulonglong>(diagnostics.channelRejectedCount)),
         QStringLiteral("窗口 / 候选 / CNR 通过 / 截断：%1 / %2 / %3 / %4")
             .arg(static_cast<qulonglong>(diagnostics.windowCount))
             .arg(static_cast<qulonglong>(diagnostics.candidateCount))
@@ -1721,7 +1737,9 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
     QStringList details{
         QStringLiteral("信号 ID：%1").arg(QString::fromStdString(businessSignal.displayId)),
         QStringLiteral("结果来源：%1").arg(businessSignal.source == policy::PolicySignalSource::Whitelist
-            ? QStringLiteral("白名单替换") : QStringLiteral("SCN 原始检测")),
+            ? QStringLiteral("白名单替换")
+            : businessSignal.hasBoundaryMetadata ? QStringLiteral("SCN 信道级业务结果")
+                                                : QStringLiteral("SCN 原始检测")),
         QStringLiteral("起始频率：%1").arg(formatFrequency(signal.startFrequencyHz)),
         QStringLiteral("终止频率：%1").arg(formatFrequency(signal.endFrequencyHz)),
         QStringLiteral("中心频率：%1").arg(formatFrequency(signal.centerFrequencyHz)),
@@ -1738,6 +1756,23 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
         QStringLiteral("信号类型：未分类"),
         fileSource ? QStringLiteral("回放时间由文件帧位置与帧率生成，与实际播放速度无关。")
                    : QStringLiteral("硬件时间相对本轮首个显示帧；负值表示更早的观测，不是日历时间。")};
+    if (businessSignal.observationState == algorithm::ObservationState::TemporarilyUnobserved)
+        details << QStringLiteral("观测状态：暂时未观测，频段和测量值为最后一次有效结果；该状态不会增加出现次数。");
+    if (businessSignal.aggregate) {
+        details << QStringLiteral("结果类型：信道级聚合 | 候选贡献引用：%1")
+            .arg(businessSignal.contributors.size());
+        details << QStringLiteral("信道测量状态：%1")
+            .arg(businessSignal.measurementValid ? QStringLiteral("有效")
+                                                 : QStringLiteral("噪声样本不足，CNR 条件未知"));
+        if (!businessSignal.priorName.empty())
+            details << QStringLiteral("信道先验：%1").arg(QString::fromStdString(businessSignal.priorName));
+    }
+    if (!businessSignal.relatedChannelIds.empty()) {
+        QStringList relatedIds;
+        for (const auto id : businessSignal.relatedChannelIds)
+            relatedIds << QStringLiteral("C-%1").arg(id < 0 ? -(id + 1) + 1 : id);
+        details << QStringLiteral("父／子信道关联：%1").arg(relatedIds.join(QStringLiteral("、")));
+    }
     if (businessSignal.hasBoundaryMetadata) {
         const auto& stable = businessSignal.stableMeasurement;
         details << QStringLiteral("原始检测频段：%1 ~ %2")
@@ -1788,7 +1823,7 @@ QString MainWindow::signalDetails(const policy::PolicySignal& businessSignal, bo
         details << QStringLiteral("告警等级：%1 | 状态：%2").arg(level, state);
         QStringList matched;
         for (const auto& rule : annotation->ruleMatches)
-            if (rule.matched) matched << QString::fromStdString(rule.ruleName);
+            if (rule.known && rule.matched) matched << QString::fromStdString(rule.ruleName);
         details << QStringLiteral("命中规则：%1").arg(matched.isEmpty() ? QStringLiteral("无") : matched.join(QStringLiteral("、")));
     }
     return details.join(QLatin1Char('\n'));
@@ -1834,6 +1869,8 @@ void MainWindow::updateSignalTable(const algorithm::DisplaySnapshot& snapshot)
             else if (annotation->state == policy::AlarmState::PendingClear) alarmLevel += QStringLiteral("（待解除）");
             if (!annotation->whitelistNames.empty()) alarmLevel += QStringLiteral(" | 白名单");
         }
+        if (businessSignal.observationState == algorithm::ObservationState::TemporarilyUnobserved)
+            alarmLevel += QStringLiteral("（待观测）");
         m_signalTable->setItem(row, 4, tableItem(alarmLevel));
         auto* lastSeen = tableItem(formatDetectionTime(signal.lastSeenNs, fileSource));
         lastSeen->setToolTip(details);
@@ -1862,6 +1899,8 @@ void MainWindow::updatePlaybackResultSignals(const algorithm::DisplaySnapshot& s
             else if (annotation->state == policy::AlarmState::PendingClear) alarm += QStringLiteral("（待解除）");
             if (!annotation->whitelistNames.empty()) alarm += QStringLiteral(" | 白名单");
         }
+        if (businessSignal.observationState == algorithm::ObservationState::TemporarilyUnobserved)
+            alarm += QStringLiteral("（待观测）");
         PlaybackSignalRow row;
         row.id = QString::fromStdString(businessSignal.displayId);
         row.centerFrequencyHz = signal.centerFrequencyHz;

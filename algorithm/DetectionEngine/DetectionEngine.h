@@ -4,6 +4,7 @@
 #include "../types/DetectionTypes.h"
 #include "../types/SpectrumTypes.h"
 #include "../accumulation/TemporalAccumulator.h"
+#include "../aggregation/ChannelAggregator.h"
 #include "../tracking/SignalTracker.h"
 #include "../diagnostics/DetectionObserver.h"
 #include <functional>
@@ -33,6 +34,7 @@ private:
     bool m_initialized = false;
     std::unique_ptr<IScnBackend> m_backend;
     TemporalAccumulator m_accumulator;
+    ChannelAggregator m_channelAggregator;
     SignalTracker m_tracker;
     DetectionObserver* m_observer = nullptr;
     std::string m_lastError;

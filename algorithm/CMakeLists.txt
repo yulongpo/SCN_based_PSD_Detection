@@ -3,6 +3,7 @@ add_library(scn_algorithm STATIC
     DetectionEngine/DetectionEngine.cpp
     preprocess/SpectrumPreprocessor.cpp
     accumulation/TemporalAccumulator.cpp
+    aggregation/ChannelAggregator.cpp
     detector/ScnDecoder.cpp
     detector/TensorRtScnBackend.cpp
     refine/CnrRefiner.cpp

@@ -451,4 +451,31 @@ void Direct2DChartRenderer::drawText(const QString& text, const QRectF& rect,
 #endif
 }
 
+void Direct2DChartRenderer::drawVerticalText(const QString& text, const QRectF& visualRect,
+                                             const QColor& color, float fontSize)
+{
+#ifdef Q_OS_WIN
+    if (!m_native->target || !m_native->inFrame || text.isEmpty() ||
+        visualRect.width() <= 0.0 || visualRect.height() <= 0.0) return;
+
+    const QPointF center = visualRect.center();
+    const QRectF layoutRect(center.x() - visualRect.height() / 2.0,
+                            center.y() - visualRect.width() / 2.0,
+                            visualRect.height(), visualRect.width());
+    D2D1_MATRIX_3X2_F originalTransform{};
+    m_native->target->GetTransform(&originalTransform);
+    const auto rotation = D2D1::Matrix3x2F::Rotation(
+        -90.0F, D2D1::Point2F(static_cast<float>(center.x()),
+                              static_cast<float>(center.y())));
+    m_native->target->SetTransform(rotation * originalTransform);
+    drawText(text, layoutRect, color, fontSize, Qt::AlignHCenter | Qt::AlignVCenter);
+    m_native->target->SetTransform(originalTransform);
+#else
+    Q_UNUSED(text)
+    Q_UNUSED(visualRect)
+    Q_UNUSED(color)
+    Q_UNUSED(fontSize)
+#endif
+}
+
 } // namespace scn::app
