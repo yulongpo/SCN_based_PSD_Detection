@@ -19,6 +19,14 @@ enum class DetectionStage
 
 enum class SpectrumBranch : std::uint8_t { Average = 1, Maximum = 2, Both = 3 };
 
+enum class BoundaryState : std::uint8_t
+{
+    Stable,
+    PendingChange,
+    Ambiguous,
+    Disabled
+};
+
 struct DetectedSignal
 {
     std::int64_t id = 0;
@@ -78,6 +86,22 @@ struct DetectionResult
     DetectionStage stage = DetectionStage::Bypassed;
     // Do not name this member `signals`: Qt defines that token as a keyword macro.
     std::vector<DetectedSignal> detections;
+    // Stable, remeasured counterparts keyed by the same tracker ID. `detections`
+    // retains the original fused frequency boundaries and measurements.
+    struct TrackedDetection
+    {
+        DetectedSignal raw;
+        DetectedSignal stable;
+        BoundaryState boundaryState = BoundaryState::Stable;
+        std::size_t pendingCount = 0;
+        std::size_t requiredCount = 0;
+        double associationIou = 0.0;
+        double centerDistanceHz = 0.0;
+        double bandwidthRatio = 1.0;
+        SpectrumBranch measurementBranch = SpectrumBranch::Average;
+        std::string diagnostic;
+    };
+    std::vector<TrackedDetection> trackedDetections;
     DetectionDiagnostics diagnostics;
 };
 

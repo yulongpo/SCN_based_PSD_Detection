@@ -3,6 +3,7 @@
 #include "../../../source/FileSource/FileSource.h"
 
 #include <QAbstractButton>
+#include <QAbstractSpinBox>
 #include <QAbstractItemView>
 #include <QApplication>
 #include <QCheckBox>
@@ -146,6 +147,17 @@ bool hasDetectionObservations(const algorithm::DetectionResult& result)
     return result.stage == algorithm::DetectionStage::Accumulating ||
            result.stage == algorithm::DetectionStage::Completed;
 }
+
+bool sameSourceConfig(const source::SourceConfig& lhs, const source::SourceConfig& rhs)
+{
+    return lhs.kind == rhs.kind && lhs.filePath == rhs.filePath &&
+        lhs.centerFrequencyHz == rhs.centerFrequencyHz &&
+        lhs.bandwidthHz == rhs.bandwidthHz &&
+        lhs.resolutionBandwidthHz == rhs.resolutionBandwidthHz &&
+        lhs.referenceLevelDbm == rhs.referenceLevelDbm &&
+        lhs.rbwShape == rhs.rbwShape && lhs.pointCount == rhs.pointCount &&
+        lhs.frameRateHz == rhs.frameRateHz && lhs.loopFile == rhs.loopFile;
+}
 }
 
 MainWindow::MainWindow(application::MonitoringSession& session,
@@ -193,7 +205,39 @@ MainWindow::MainWindow(application::MonitoringSession& session,
     connect(&m_session, &application::MonitoringSession::deviceStatusChanged,
             this, [this](const QString& device, const QString& status, bool connected) {
                 m_statusStrip->setDeviceConnectionStatus(device, status, connected);
+                bool* known = nullptr;
+                bool* current = nullptr;
+                if (device.compare(QStringLiteral("BB60C"), Qt::CaseInsensitive) == 0) {
+                    known = &m_bb60cPresenceKnown;
+                    current = &m_bb60cConnected;
+                } else if (device.contains(QStringLiteral("海得罗捷")) ||
+                           device.compare(QStringLiteral("Harogic"), Qt::CaseInsensitive) == 0) {
+                    known = &m_harogicPresenceKnown;
+                    current = &m_harogicConnected;
+                }
+                if (!known || !current) return;
+                const bool wasKnown = *known;
+                const bool wasConnected = *current;
+                *known = true;
+                *current = connected;
+
+                const auto selectedKind = static_cast<algorithm::SourceKind>(
+                    m_sourceCombo->currentData().toInt());
+                const bool isSelectedDevice =
+                    (selectedKind == algorithm::SourceKind::BB60C && known == &m_bb60cPresenceKnown) ||
+                    (selectedKind == algorithm::SourceKind::Harogic && known == &m_harogicPresenceKnown);
+                if (isSelectedDevice && connected) m_missingLiveSourceWarningShown = false;
+
+                if (m_waitingForInitialDeviceProbe && isSelectedDevice) {
+                    m_waitingForInitialDeviceProbe = false;
+                    if (connected) (void)applyCurrentConfiguration();
+                    else warnForMissingSelectedLiveSource();
+                } else if (isSelectedDevice && !connected && (!wasKnown || wasConnected)) {
+                    warnForMissingSelectedLiveSource();
+                }
+                updateStartButtonAvailability();
             });
+    m_session.startDeviceMonitoring();
     connect(&m_session, &application::MonitoringSession::recordingStatusChanged,
             this, &MainWindow::onRecordingStatus);
     connect(&m_session, &application::MonitoringSession::recordingError,
@@ -217,6 +261,12 @@ MainWindow::MainWindow(application::MonitoringSession& session,
                 const int safeRateHz = std::clamp(rateHz, 1, 120);
                 if (m_displayTimer) m_displayTimer->setInterval(1000 / safeRateHz);
                 m_session.setPublicationRateHz(safeRateHz);
+            });
+    connect(m_settingsPage, &SettingsPage::displayDynamicRangeChanged,
+            this, [this](double rangeDb) {
+                m_spectrum->setDynamicRangeDb(rangeDb);
+                m_waterfall->setDynamicRangeDb(rangeDb);
+                statusBar()->showMessage(QStringLiteral("显示动态范围已应用。"), 3000);
             });
     connect(m_settingsPage, &SettingsPage::detectionApplyRequested,
             this, [this] { (void)applyDetectionConfiguration(); });
@@ -260,7 +310,15 @@ MainWindow::MainWindow(application::MonitoringSession& session,
     updateDisplayDomain();
     (void)applyDetectionConfiguration();
     applyPolicyConfiguration();
-    applyConfiguration();
+    const auto initialSourceKind = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt());
+    if (initialSourceKind == algorithm::SourceKind::File) {
+        applyConfiguration();
+    } else {
+        // Wait for the asynchronous hardware probe before opening a live
+        // source so an absent device does not produce a startup-open error.
+        m_waitingForInitialDeviceProbe = true;
+        updateStartButtonAvailability();
+    }
     updateRuntimeStatus();
 }
 
@@ -556,7 +614,7 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_referenceLevel->setSuffix(QStringLiteral(" dBm"));
     m_referenceLevel->setMinimumWidth(120);
     m_referenceLevel->setToolTip(QStringLiteral(
-        "用于自动增益/衰减控制；频谱图和瀑布图显示范围为参考电平以下80 dB"));
+        "用于自动增益/衰减控制；频谱图和瀑布图动态范围可在系统设置的显示页调整。"));
     auto* referenceGroup = parameterGroup(QStringLiteral("参考电平"), m_referenceLevel);
     configGrid->addWidget(referenceGroup, 1, 4, 1, 2);
 
@@ -565,10 +623,19 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     m_rbwShape->addItem(QStringLiteral("Flattop"), static_cast<int>(source::RbwShape::Flattop));
     m_rbwShape->addItem(QStringLiteral("CISPR"), static_cast<int>(source::RbwShape::Cispr));
     m_rbwShape->setToolTip(QStringLiteral(
-        "BB60C RBW窗口：Nuttall速度优先，Flattop幅度精度优先，CISPR为6 dB截止"));
+        "RBW窗口：Nuttall速度优先，Flattop幅度精度优先，CISPR为6 dB截止。实时监测中更改后会重新配置数据源。"));
     m_rbwShape->setMinimumWidth(130);
     m_rbwShapeGroup = parameterGroup(QStringLiteral("RBW窗口"), m_rbwShape);
     configGrid->addWidget(m_rbwShapeGroup, 1, 6, 1, 2);
+    const QString liveParameterHint = QStringLiteral(
+        "实时监测期间可修改；按 Enter 或离开输入框后会重新配置实时源，并从新参数重新累计检测结果。");
+    m_centerFrequency->setToolTip(liveParameterHint);
+    m_bandwidth->setToolTip(liveParameterHint);
+    m_startFrequency->setToolTip(liveParameterHint);
+    m_endFrequency->setToolTip(liveParameterHint);
+    m_resolutionBandwidth->setToolTip(liveParameterHint);
+    m_referenceLevel->setToolTip(QStringLiteral(
+        "用于硬件增益/衰减控制；实时监测期间按 Enter 或离开输入框后应用。频谱图和瀑布图动态范围可在系统设置的显示页调整。"));
     configGrid->setColumnStretch(1, 1);
     configGrid->setColumnStretch(3, 1);
     configGrid->setColumnStretch(5, 1);
@@ -670,6 +737,20 @@ void MainWindow::buildMonitorControlPanel(QWidget* parent)
     connect(m_applyButton, &QPushButton::clicked, this, &MainWindow::applyConfiguration);
     connect(m_startButton, &QPushButton::clicked, this, &MainWindow::startMonitoring);
     connect(m_pauseButton, &QPushButton::clicked, this, &MainWindow::pauseMonitoring);
+
+    const auto applyLiveConfiguration = [this] {
+        QTimer::singleShot(0, this, &MainWindow::applyLiveSourceConfiguration);
+    };
+    for (auto* editor : {static_cast<QAbstractSpinBox*>(m_centerFrequency),
+                         static_cast<QAbstractSpinBox*>(m_bandwidth),
+                         static_cast<QAbstractSpinBox*>(m_startFrequency),
+                         static_cast<QAbstractSpinBox*>(m_endFrequency),
+                         static_cast<QAbstractSpinBox*>(m_resolutionBandwidth),
+                         static_cast<QAbstractSpinBox*>(m_referenceLevel)}) {
+        connect(editor, &QAbstractSpinBox::editingFinished, this, applyLiveConfiguration);
+    }
+    connect(m_rbwShape, qOverload<int>(&QComboBox::currentIndexChanged),
+            this, [applyLiveConfiguration](int) { applyLiveConfiguration(); });
 
     const auto syncFromCenterSpan = [this](double) {
         if (m_updatingFrequency) return;
@@ -915,28 +996,32 @@ void MainWindow::sourceSelectionChanged(int)
         m_statusStrip->setDeviceValue(m_sourceCombo->currentText());
         m_statusStrip->setMenuInfoVisible(fileSource);
     }
+    m_missingLiveSourceWarningShown = false;
+    updateStartButtonAvailability();
+    if (!fileSource) warnForMissingSelectedLiveSource();
 }
 
 void MainWindow::updateSourceControls()
 {
     if (!m_sourceCombo) return;
     const bool fileSource = m_sourceCombo->currentData().toInt() == static_cast<int>(algorithm::SourceKind::File);
-    const bool editable = !m_monitoring;
-    m_centerFrequency->setEnabled(!fileSource && editable);
-    m_bandwidth->setEnabled(!fileSource && editable);
+    const bool sourceSelectionEditable = !m_monitoring;
+    const bool liveParametersEditable = !fileSource;
+    m_centerFrequency->setEnabled(liveParametersEditable);
+    m_bandwidth->setEnabled(liveParametersEditable);
     if (m_centerGroup) m_centerGroup->setVisible(!fileSource);
     if (m_bandwidthGroup) m_bandwidthGroup->setVisible(!fileSource);
     if (m_fileSourceGroup) m_fileSourceGroup->setVisible(fileSource);
-    m_filePath->setEnabled(fileSource && editable);
-    m_browseButton->setEnabled(fileSource && editable);
+    m_filePath->setEnabled(fileSource && sourceSelectionEditable);
+    m_browseButton->setEnabled(fileSource && sourceSelectionEditable);
     // FILE metadata are authoritative for the active file.  Keep the values
     // visible for ISA-style inspection, but never allow editing them in FILE
     // mode; a different file is selected through the Browse button.
-    m_startFrequency->setEnabled(editable && !fileSource);
-    m_endFrequency->setEnabled(editable && !fileSource);
-    m_resolutionBandwidth->setEnabled(editable && !fileSource);
-    m_referenceLevel->setEnabled(editable && !fileSource);
-    m_rbwShape->setEnabled(!fileSource && editable);
+    m_startFrequency->setEnabled(liveParametersEditable);
+    m_endFrequency->setEnabled(liveParametersEditable);
+    m_resolutionBandwidth->setEnabled(liveParametersEditable);
+    m_referenceLevel->setEnabled(liveParametersEditable);
+    m_rbwShape->setEnabled(liveParametersEditable);
     if (m_rbwShapeGroup) m_rbwShapeGroup->setVisible(!fileSource);
     if (auto* grid = m_centerGroup
                          ? qobject_cast<QGridLayout*>(m_centerGroup->parentWidget()->layout())
@@ -948,11 +1033,59 @@ void MainWindow::updateSourceControls()
         grid->invalidate();
         grid->activate();
     }
-    m_loopFile->setEnabled(fileSource && editable);
-    m_sourceCombo->setEnabled(editable);
-    m_pointCount->setEnabled(editable);
-    m_frameRate->setEnabled(editable);
-    m_applyButton->setEnabled(editable);
+    m_loopFile->setEnabled(fileSource && sourceSelectionEditable);
+    m_sourceCombo->setEnabled(sourceSelectionEditable);
+    m_pointCount->setEnabled(liveParametersEditable);
+    m_frameRate->setEnabled(liveParametersEditable);
+    m_applyButton->setEnabled(sourceSelectionEditable);
+    updateStartButtonAvailability();
+}
+
+bool MainWindow::liveSourcePresence(algorithm::SourceKind kind, bool* known) const
+{
+    if (kind == algorithm::SourceKind::BB60C) {
+        if (known) *known = m_bb60cPresenceKnown;
+        return m_bb60cConnected;
+    }
+    if (kind == algorithm::SourceKind::Harogic) {
+        if (known) *known = m_harogicPresenceKnown;
+        return m_harogicConnected;
+    }
+    if (known) *known = true;
+    return true;
+}
+
+void MainWindow::updateStartButtonAvailability()
+{
+    if (!m_startButton || !m_sourceCombo) return;
+    if (m_monitoring) {
+        m_startButton->setEnabled(true); // Keep Stop available even if the device disappears.
+        m_startButton->setToolTip(QString());
+        return;
+    }
+    const auto kind = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt());
+    bool known = false;
+    const bool present = liveSourcePresence(kind, &known);
+    const bool enabled = kind == algorithm::SourceKind::File || (known && present);
+    m_startButton->setEnabled(enabled);
+    m_startButton->setToolTip(enabled ? QString() :
+        QStringLiteral("所选实时源尚未接入，检测到设备后才能开始监测。"));
+}
+
+void MainWindow::warnForMissingSelectedLiveSource()
+{
+    if (m_missingLiveSourceWarningShown || !m_sourceCombo) return;
+    const auto kind = static_cast<algorithm::SourceKind>(m_sourceCombo->currentData().toInt());
+    if (kind == algorithm::SourceKind::File) return;
+    bool known = false;
+    if (liveSourcePresence(kind, &known) || !known) return;
+
+    m_missingLiveSourceWarningShown = true;
+    const QString sourceName = kind == algorithm::SourceKind::BB60C
+        ? QStringLiteral("BB60C") : QStringLiteral("海得罗捷");
+    QMessageBox::warning(this, QStringLiteral("实时源未接入"),
+        QStringLiteral("当前选择的 %1 设备未接入。请连接设备后再开始监测。")
+            .arg(sourceName));
 }
 
 void MainWindow::updateDisplayDomain()
@@ -967,6 +1100,10 @@ void MainWindow::updateDisplayDomain()
     if (!std::isfinite(startHz) || !std::isfinite(endHz) || !(endHz > startHz)) {
         return;
     }
+    const double dynamicRangeDb = m_settingsPage
+        ? m_settingsPage->displayDynamicRangeDb() : 80.0;
+    m_spectrum->setDynamicRangeDb(dynamicRangeDb);
+    m_waterfall->setDynamicRangeDb(dynamicRangeDb);
     m_spectrum->setDisplayDomain(startHz, endHz, referenceLevelDbm);
     m_waterfall->setDisplayDomain(startHz, endHz, referenceLevelDbm);
     syncFrequencyNavigator();
@@ -1119,10 +1256,27 @@ void MainWindow::applyConfiguration()
 bool MainWindow::applyCurrentConfiguration()
 {
     const auto config = currentConfig();
+    if (config.kind != algorithm::SourceKind::File) {
+        bool known = false;
+        const bool connected = liveSourcePresence(config.kind, &known);
+        if (!known || !connected) {
+            statusBar()->showMessage(known ? QStringLiteral("实时设备未接入，不能应用实时源参数。")
+                                           : QStringLiteral("正在检查实时设备接入状态，请稍候。"), 5000);
+            if (known) warnForMissingSelectedLiveSource();
+            updateStartButtonAvailability();
+            return false;
+        }
+    }
     QString validationError;
     if (!validateConfiguration(config, validationError)) {
         statusBar()->showMessage(validationError, 6000);
         return false;
+    }
+    const bool liveReconfiguration = m_monitoring &&
+        config.kind != algorithm::SourceKind::File;
+    if (liveReconfiguration && m_hasLastAppliedSourceConfig &&
+        sameSourceConfig(config, m_lastAppliedSourceConfig)) {
+        return true;
     }
     // SCN controls are a draft. Only their explicit Apply action changes the
     // accepted detector configuration; source start must not commit that draft.
@@ -1132,14 +1286,27 @@ bool MainWindow::applyCurrentConfiguration()
     m_pendingSnapshot.reset();
     m_session.configureRecording(recordingConfig());
     m_controller.configure(config);
+    m_lastAppliedSourceConfig = config;
+    m_hasLastAppliedSourceConfig = true;
     updateDisplayDomain();
     m_spectrum->resetView();
     m_waterfall->resetView();
     m_statusStrip->setMenuInfo(config.centerFrequencyHz, config.bandwidthHz,
                                config.resolutionBandwidthHz);
     m_statusStrip->setMenuInfoVisible(config.kind == algorithm::SourceKind::File);
-    statusBar()->showMessage(QStringLiteral("参数已提交，等待数据源初始化。"), 3000);
+    statusBar()->showMessage(liveReconfiguration
+        ? QStringLiteral("实时参数已提交，正在重新配置并恢复采集。")
+        : QStringLiteral("参数已提交，等待数据源初始化。"), 4000);
     return true;
+}
+
+void MainWindow::applyLiveSourceConfiguration()
+{
+    if (!m_monitoring || !m_sourceCombo ||
+        m_sourceCombo->currentData().toInt() == static_cast<int>(algorithm::SourceKind::File)) {
+        return;
+    }
+    (void)applyCurrentConfiguration();
 }
 
 bool MainWindow::applyDetectionConfiguration()

@@ -483,7 +483,7 @@ void WaterfallWidget::setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
     m_hasDisplayDomain = m_displayEndHz > m_displayStartHz;
     if (std::isfinite(frame.referenceLevelDbm)) {
         m_displayMaxDb = frame.referenceLevelDbm;
-        m_displayMinDb = frame.referenceLevelDbm - 80.0;
+        m_displayMinDb = frame.referenceLevelDbm - m_dynamicRangeDb;
     }
     const bool sourceChanged = m_historyFrameLength != frame.powerDb.size() ||
         std::abs(m_historyStartFrequencyHz - frame.startFrequencyHz) > 0.5 ||
@@ -539,7 +539,7 @@ void WaterfallWidget::setDisplayDomain(double startHz, double endHz,
     m_hasDisplayDomain = true;
     if (std::isfinite(referenceLevelDbm)) {
         m_displayMaxDb = referenceLevelDbm;
-        m_displayMinDb = referenceLevelDbm - 80.0;
+        m_displayMinDb = referenceLevelDbm - m_dynamicRangeDb;
     }
     if (!m_snapshot || !m_snapshot->frame.isValid() || !m_manualView) {
         m_viewStartHz = startHz;
@@ -561,6 +561,21 @@ void WaterfallWidget::setDisplayDomain(double startHz, double endHz,
     m_appliedGeneration = 0;
     if (m_snapshot && m_historyCount > 0) requestRender(true, false);
     if (m_renderSettleTimer) m_renderSettleTimer->start();
+    update();
+}
+
+void WaterfallWidget::setDynamicRangeDb(double dynamicRangeDb)
+{
+    if (!std::isfinite(dynamicRangeDb) || dynamicRangeDb <= 0.0) return;
+    const double safeRangeDb = std::clamp(dynamicRangeDb, 1.0, 200.0);
+    if (std::abs(safeRangeDb - m_dynamicRangeDb) < 1e-9) return;
+
+    m_dynamicRangeDb = safeRangeDb;
+    m_displayMinDb = m_displayMaxDb - m_dynamicRangeDb;
+    ++m_renderGeneration;
+    if (m_renderWorker) m_renderWorker->cancel(m_renderGeneration);
+    m_appliedGeneration = 0;
+    if (m_snapshot && m_historyCount > 0) requestRender(false, false);
     update();
 }
 
@@ -819,10 +834,8 @@ bool WaterfallWidget::canIncrementallyRender() const
         m_renderedViewEndHz != m_viewEndHz) {
         return false;
     }
-    const double displayMaxDb = std::isfinite(m_snapshot->frame.referenceLevelDbm)
-        ? m_snapshot->frame.referenceLevelDbm : 0.0;
-    if (std::abs(m_renderedDisplayMaxDb - displayMaxDb) > 1e-9 ||
-        std::abs(m_renderedDisplayMinDb - (displayMaxDb - 80.0)) > 1e-9) {
+    if (std::abs(m_renderedDisplayMaxDb - m_displayMaxDb) > 1e-9 ||
+        std::abs(m_renderedDisplayMinDb - m_displayMinDb) > 1e-9) {
         return false;
     }
     return m_renderedFrameSequence != m_snapshot->frame.sequence;

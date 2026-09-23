@@ -10,6 +10,8 @@
 #include <QObject>
 #include <QString>
 
+#include <atomic>
+
 Q_DECLARE_METATYPE(scn::algorithm::DisplaySnapshot)
 Q_DECLARE_METATYPE(scn::algorithm::DisplaySnapshotPtr)
 Q_DECLARE_METATYPE(scn::application::policy::PolicySnapshotPtr)
@@ -32,6 +34,7 @@ public:
     ~MonitoringSession() override;
 
     void configure(const source::SourceConfig& config);
+    void startDeviceMonitoring();
     void configureRecording(const RecordingConfig& config);
     void start();
     void pause();
@@ -71,6 +74,7 @@ private:
     std::uint64_t m_publishedPolicyRevision = 0;
     QTimer* m_publishTimer = nullptr;
     int m_publicationRateHz = 30;
+    std::atomic<bool> m_paused{false};
     void publishLatest();
 };
 

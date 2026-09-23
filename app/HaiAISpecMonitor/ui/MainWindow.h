@@ -98,6 +98,9 @@ private:
     void buildMenus();
     void applyTheme();
     void updateSourceControls();
+    void updateStartButtonAvailability();
+    void warnForMissingSelectedLiveSource();
+    bool liveSourcePresence(algorithm::SourceKind kind, bool* known = nullptr) const;
     void updateDisplayDomain();
     void syncFrequencyNavigator();
     void updateButtonState(const QString& state);
@@ -118,6 +121,7 @@ private:
     QString formatDetectionTime(std::int64_t timestampNs, bool fileSource) const;
     QString signalDetails(const policy::PolicySignal& signal, bool fileSource) const;
     source::SourceConfig currentConfig() const;
+    void applyLiveSourceConfiguration();
     bool validateConfiguration(const source::SourceConfig& config, QString& error) const;
     QString formatFrequency(double hz, int decimals = 3) const;
     Qt::Edges resizeEdgesAt(const QPoint& globalPosition) const;
@@ -196,6 +200,12 @@ private:
     double m_displayRateHz = 0;
 
     bool m_monitoring = false;
+    bool m_bb60cPresenceKnown = false;
+    bool m_bb60cConnected = false;
+    bool m_harogicPresenceKnown = false;
+    bool m_harogicConnected = false;
+    bool m_missingLiveSourceWarningShown = false;
+    bool m_waitingForInitialDeviceProbe = false;
     bool m_dragging = false;
     bool m_manualResizing = false;
     bool m_resizeCursorOverridden = false;
@@ -203,6 +213,8 @@ private:
     bool m_fileFrequencyMetadataLocked = false;
     bool m_fileRbwMetadataLocked = false;
     bool m_fileReferenceMetadataLocked = false;
+    source::SourceConfig m_lastAppliedSourceConfig{};
+    bool m_hasLastAppliedSourceConfig = false;
     QPoint m_dragOffset;
     QPoint m_resizePressPosition;
     QRect m_resizeGeometry;

@@ -33,6 +33,7 @@ public:
 public slots:
     void setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot);
     void setDisplayDomain(double startHz, double endHz, double referenceLevelDbm);
+    void setDynamicRangeDb(double dynamicRangeDb);
     void setFrequencyView(double startHz, double endHz);
     void setSelectedFrequency(double frequencyHz);
     void resetView();
@@ -107,6 +108,7 @@ private:
     double m_displayEndHz = 0.0;
     double m_displayMaxDb = 0.0;
     double m_displayMinDb = -80.0;
+    double m_dynamicRangeDb = 80.0;
     bool m_hasDisplayDomain = false;
     double m_selectedFrequencyHz = 0.0;
     bool m_viewInitialized = false;

@@ -35,6 +35,7 @@ public slots:
     void setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot);
     void setPolicySnapshot(const application::policy::PolicySnapshotPtr& snapshot);
     void setDisplayDomain(double startHz, double endHz, double referenceLevelDbm);
+    void setDynamicRangeDb(double dynamicRangeDb);
     void setFrequencyView(double startHz, double endHz);
     void setSelectedFrequency(double frequencyHz);
     void resetFrequencyView();
@@ -146,6 +147,7 @@ private:
     QPolygonF m_averageLower;
     double m_displayMinDb = -80.0;
     double m_displayMaxDb = 0.0;
+    double m_dynamicRangeDb = 80.0;
     double m_displayStartHz = 0.0;
     double m_displayEndHz = 0.0;
     double m_viewMinDb = -80.0;

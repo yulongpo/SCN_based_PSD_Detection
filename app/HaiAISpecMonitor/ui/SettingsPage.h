@@ -33,6 +33,7 @@ class SettingsPage final : public QWidget
 public:
     explicit SettingsPage(QWidget* parent = nullptr);
     int displayRefreshRateHz() const;
+    double displayDynamicRangeDb() const;
     application::RecordingConfig recordingConfig() const;
     void saveRecordingConfig() const;
     void setRecordingStatus(const QString& status);
@@ -45,6 +46,7 @@ public:
 signals:
     void logMessage(const QString& message);
     void displayRefreshRateChanged(int rateHz);
+    void displayDynamicRangeChanged(double rangeDb);
     void detectionApplyRequested();
     void policyApplyRequested();
     void alarmHistoryRequested();
@@ -84,6 +86,7 @@ private:
     QStackedWidget* m_stack = nullptr;
     QPlainTextEdit* m_logEdit = nullptr;
     QSpinBox* m_displayRate = nullptr;
+    QSpinBox* m_displayDynamicRange = nullptr;
     QLineEdit* m_storagePath = nullptr;
     QCheckBox* m_recordingEnabled = nullptr;
     QLineEdit* m_recordingDirectory = nullptr;

@@ -16,28 +16,75 @@ class SessionWorker final : public QObject
     Q_OBJECT
 public:
     explicit SessionWorker(SessionPipeline& pipeline) : m_pipeline(pipeline) {}
-    void configure(const source::SourceConfig& config, std::uint64_t epoch, std::uint64_t control)
+    void configure(const source::SourceConfig& config, std::uint64_t epoch,
+                   std::uint64_t control, bool resumeRequested, bool pausedRequested)
     {
         if (epoch != m_pipeline.generation) return;
-        ensureTimer(); m_timer->stop(); m_running = false; m_paused = false; m_epoch = epoch; m_control = control;
+        const bool resumeAfterConfigure = m_running || resumeRequested;
+        const bool remainPaused = m_paused || (resumeRequested && pausedRequested);
+        ensureTimer();
+        m_timer->stop();
+        m_running = false;
+        m_paused = false;
+        m_epoch = epoch;
+        m_control = control;
         finishRecording();
         m_lastTimestamp = -1;
-        publishDevices(false);
         std::string error;
         if (!m_sources.configure(config, error)) {
+            publishDevices();
             m_pipeline.setActive(epoch, false);
+            if (epoch != m_pipeline.generation) return;
             emit errorOccurred(m_control, QString::fromStdString(error));
             emit stateChanged(m_control, QStringLiteral("Source configuration failed"));
             return;
         }
-        publishDevices(true);
+        if (epoch != m_pipeline.generation) {
+            m_sources.stop();
+            return;
+        }
+        publishDevices();
         m_timer->setInterval(std::max(1, 1000 / std::max(1, config.frameRateHz)));
-        emit stateChanged(m_control, QStringLiteral("Configured"));
+        if (!resumeAfterConfigure) {
+            emit stateChanged(m_control, QStringLiteral("Configured"));
+            return;
+        }
+        if (!m_sources.start()) {
+            m_pipeline.setActive(epoch, false);
+            emit errorOccurred(m_control, QStringLiteral("The selected source could not resume after reconfiguration."));
+            emit stateChanged(m_control, QStringLiteral("Source restart failed"));
+            return;
+        }
+        if (!m_pipeline.setActive(epoch, true)) {
+            m_sources.stop();
+            return;
+        }
+        m_running = true;
+        m_paused = remainPaused;
+        if (remainPaused) {
+            m_sources.pause(true);
+        } else {
+            m_timer->start();
+        }
+        emit stateChanged(m_control, remainPaused ? QStringLiteral("Paused")
+                                                  : QStringLiteral("Running"));
     }
     void setRecordingConfig(const RecordingConfig& config)
     {
         if (m_running) return;
         m_recordingConfig = config;
+    }
+    void startDeviceMonitoring()
+    {
+        m_control = m_pipeline.controlGeneration.load();
+        m_epoch = m_pipeline.generation.load();
+        if (!m_deviceTimer) {
+            m_deviceTimer = new QTimer(this);
+            m_deviceTimer->setInterval(2000);
+            connect(m_deviceTimer, &QTimer::timeout, this, &SessionWorker::publishDevices);
+        }
+        publishDevices();
+        if (!m_deviceTimer->isActive()) m_deviceTimer->start();
     }
     void start(std::uint64_t epoch)
     {
@@ -168,18 +215,22 @@ private:
         m_timer->setTimerType(Qt::PreciseTimer);
         connect(m_timer, &QTimer::timeout, this, &SessionWorker::onTick);
     }
-    void publishDevices(bool configured)
+    void publishDevices()
     {
-        const bool bb = configured && m_sources.kind() == algorithm::SourceKind::BB60C;
-        const bool harogic = configured && m_sources.kind() == algorithm::SourceKind::Harogic;
+        auto presence = source::probeLiveSourcePresence();
+        presence.bb60c = presence.bb60c ||
+            m_sources.hasOpenLiveSource(algorithm::SourceKind::BB60C);
+        presence.harogic = presence.harogic ||
+            m_sources.hasOpenLiveSource(algorithm::SourceKind::Harogic);
         emit deviceStatusChanged(m_control, QStringLiteral("BB60C"),
-            bb ? QStringLiteral("已连接") : QStringLiteral("未连接"), bb);
+            presence.bb60c ? QStringLiteral("已连接") : QStringLiteral("未连接"), presence.bb60c);
         emit deviceStatusChanged(m_control, QStringLiteral("海得罗捷"),
-            harogic ? QStringLiteral("已连接") : QStringLiteral("未接入"), harogic);
+            presence.harogic ? QStringLiteral("已连接") : QStringLiteral("未接入"), presence.harogic);
     }
     SessionPipeline& m_pipeline;
     SourceManager m_sources;
     QTimer* m_timer = nullptr;
+    QTimer* m_deviceTimer = nullptr;
     std::uint64_t m_epoch = 0, m_control = 0;
     std::int64_t m_lastTimestamp = -1;
     RecordingConfig m_recordingConfig;
@@ -249,12 +300,15 @@ void MonitoringSession::setPublicationRateHz(int rateHz)
 
 void MonitoringSession::configure(const source::SourceConfig& config)
 {
+    const bool resumeRequested = m_pipeline->active.load();
+    const bool pausedRequested = m_paused.load();
     const auto epoch = m_pipeline->newEpoch();
     // Existing clients that do not supply detection settings still get the default model.
     if (!m_pipeline->configVersion) configureDetection(algorithm::DetectionConfig{});
     const auto control = m_pipeline->controlGeneration.load();
-    QMetaObject::invokeMethod(m_worker, [worker = m_worker, config, epoch, control] {
-        worker->configure(config, epoch, control);
+    QMetaObject::invokeMethod(m_worker,
+        [worker = m_worker, config, epoch, control, resumeRequested, pausedRequested] {
+        worker->configure(config, epoch, control, resumeRequested, pausedRequested);
     }, Qt::QueuedConnection);
 }
 
@@ -262,6 +316,13 @@ void MonitoringSession::configureRecording(const RecordingConfig& config)
 {
     QMetaObject::invokeMethod(m_worker, [worker = m_worker, config] {
         worker->setRecordingConfig(config);
+    }, Qt::QueuedConnection);
+}
+
+void MonitoringSession::startDeviceMonitoring()
+{
+    QMetaObject::invokeMethod(m_worker, [worker = m_worker] {
+        worker->startDeviceMonitoring();
     }, Qt::QueuedConnection);
 }
 
@@ -306,22 +367,26 @@ bool MonitoringSession::loadAlarmHistory(std::vector<policy::AlarmEvent>& events
 
 void MonitoringSession::start()
 {
+    m_paused = false;
     const auto epoch = m_pipeline->generation.load();
     m_pipeline->setActive(epoch, true); // Prevent a model restart while source start is queued.
     QMetaObject::invokeMethod(m_worker, [worker = m_worker, epoch] { worker->start(epoch); }, Qt::QueuedConnection);
 }
 void MonitoringSession::pause()
 {
+    m_paused = true;
     const auto epoch = m_pipeline->controlGeneration.load();
     QMetaObject::invokeMethod(m_worker, [worker = m_worker, epoch] { worker->pause(epoch); }, Qt::QueuedConnection);
 }
 void MonitoringSession::resume()
 {
+    m_paused = false;
     const auto epoch = m_pipeline->controlGeneration.load();
     QMetaObject::invokeMethod(m_worker, [worker = m_worker, epoch] { worker->resume(epoch); }, Qt::QueuedConnection);
 }
 void MonitoringSession::stop()
 {
+    m_paused = false;
     const auto epoch = m_pipeline->newEpoch(); // Immediately invalidate queued and in-flight output.
     const auto control = m_pipeline->controlGeneration.load();
     QMetaObject::invokeMethod(m_worker, [worker = m_worker, epoch, control] { worker->stop(epoch, control); }, Qt::QueuedConnection);

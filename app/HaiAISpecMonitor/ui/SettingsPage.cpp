@@ -17,6 +17,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPainter>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSettings>
@@ -63,6 +64,69 @@ QWidget* formContainer(QWidget* parent)
     auto* widget = new QWidget(parent);
     widget->setObjectName(QStringLiteral("settingsCard"));
     return widget;
+}
+
+class PolicySwitchButton final : public QToolButton
+{
+public:
+    explicit PolicySwitchButton(bool checked, QWidget* parent = nullptr)
+        : QToolButton(parent)
+    {
+        setCheckable(true);
+        setChecked(checked);
+        setFixedSize(54, 30);
+        setFocusPolicy(Qt::StrongFocus);
+        setCursor(Qt::PointingHandCursor);
+        setAccessibleName(QStringLiteral("启用状态"));
+        connect(this, &QToolButton::toggled, this, [this](bool enabled) {
+            setToolTip(enabled ? QStringLiteral("已启用") : QStringLiteral("已停用"));
+            setAccessibleDescription(enabled ? QStringLiteral("已启用") : QStringLiteral("已停用"));
+        });
+        setToolTip(checked ? QStringLiteral("已启用") : QStringLiteral("已停用"));
+        setAccessibleDescription(checked ? QStringLiteral("已启用") : QStringLiteral("已停用"));
+    }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const QRectF track = QRectF(rect()).adjusted(1.0, 1.0, -1.0, -1.0);
+        const QColor trackColor = isChecked() ? QColor(QStringLiteral("#078cf2"))
+                                              : QColor(QStringLiteral("#3b4352"));
+        painter.setPen(QPen(hasFocus() ? QColor(QStringLiteral("#72bdff"))
+                                       : QColor(QStringLiteral("#596477")), 1.0));
+        painter.setBrush(trackColor);
+        painter.drawRoundedRect(track, track.height() / 2.0, track.height() / 2.0);
+
+        constexpr qreal knobSize = 20.0;
+        const qreal knobX = isChecked() ? track.right() - knobSize - 3.0
+                                        : track.left() + 3.0;
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(QStringLiteral("#f4f8ff")));
+        painter.drawEllipse(QRectF(knobX, track.center().y() - knobSize / 2.0,
+                                   knobSize, knobSize));
+    }
+};
+
+QWidget* policySwitchCell(bool checked, QWidget* parent)
+{
+    auto* cell = new QWidget(parent);
+    auto* layout = new QHBoxLayout(cell);
+    layout->setContentsMargins(4, 0, 4, 0);
+    layout->setAlignment(Qt::AlignCenter);
+    auto* toggle = new PolicySwitchButton(checked, cell);
+    toggle->setObjectName(QStringLiteral("policyEnabledSwitch"));
+    layout->addWidget(toggle);
+    return cell;
+}
+
+bool policySwitchChecked(const QTableWidget* table, int row, int column)
+{
+    auto* cell = table->cellWidget(row, column);
+    auto* toggle = cell ? cell->findChild<QToolButton*>(QStringLiteral("policyEnabledSwitch"))
+                        : nullptr;
+    return toggle ? toggle->isChecked() : true;
 }
 
 QString defaultRecordingDirectory()
@@ -133,6 +197,11 @@ SettingsPage::SettingsPage(QWidget* parent)
 int SettingsPage::displayRefreshRateHz() const
 {
     return m_displayRate ? m_displayRate->value() : 30;
+}
+
+double SettingsPage::displayDynamicRangeDb() const
+{
+    return m_displayDynamicRange ? m_displayDynamicRange->value() : 80.0;
 }
 
 application::RecordingConfig SettingsPage::recordingConfig() const
@@ -237,6 +306,24 @@ QWidget* SettingsPage::buildDisplayPage()
         settings.setValue(QStringLiteral("ui/displayRefreshRateHz"), safeRateHz);
         settings.sync();
         emit displayRefreshRateChanged(safeRateHz);
+    });
+    m_displayDynamicRange = new QSpinBox(card);
+    m_displayDynamicRange->setRange(20, 160);
+    m_displayDynamicRange->setSingleStep(5);
+    m_displayDynamicRange->setValue(
+        settings.value(QStringLiteral("ui/displayDynamicRangeDb"), 80).toInt());
+    m_displayDynamicRange->setSuffix(QStringLiteral(" dB"));
+    m_displayDynamicRange->setMinimumWidth(120);
+    m_displayDynamicRange->setToolTip(QStringLiteral(
+        "频谱图纵轴和瀑布图色阶共用此动态范围，上限为当前参考电平。"));
+    form->addRow(QStringLiteral("显示动态范围"), m_displayDynamicRange);
+    connect(m_displayDynamicRange, qOverload<int>(&QSpinBox::valueChanged),
+            this, [this](int rangeDb) {
+        const int safeRangeDb = std::clamp(rangeDb, 20, 160);
+        QSettings settings(QStringLiteral("SCN"), QStringLiteral("HaiAISpecMonitor"));
+        settings.setValue(QStringLiteral("ui/displayDynamicRangeDb"), safeRangeDb);
+        settings.sync();
+        emit displayDynamicRangeChanged(static_cast<double>(safeRangeDb));
     });
     auto* rows = new QSpinBox(card);
     rows->setRange(50, 2000);
@@ -538,6 +625,10 @@ QWidget* SettingsPage::buildWhitelistPage()
     m_whitelistTable->setHorizontalHeaderLabels({QStringLiteral("名称"), QStringLiteral("起始频率"),
         QStringLiteral("终止频率"), QStringLiteral("启用"), QStringLiteral("备注")});
     m_whitelistTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_whitelistTable->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
+    m_whitelistTable->horizontalHeader()->setSectionResizeMode(3, QHeaderView::Fixed);
+    m_whitelistTable->setColumnWidth(3, 100);
+    m_whitelistTable->verticalHeader()->setDefaultSectionSize(42);
     m_whitelistTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_whitelistTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_whitelistTable->setEditTriggers(QAbstractItemView::DoubleClicked |
@@ -581,6 +672,10 @@ QWidget* SettingsPage::buildRulePage()
         QStringLiteral("等级"), QStringLiteral("连续次数"), QStringLiteral("持续(s)"),
         QStringLiteral("解除(s)"), QStringLiteral("启用")});
     m_ruleTable->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    m_ruleTable->horizontalHeader()->setDefaultAlignment(Qt::AlignCenter);
+    m_ruleTable->horizontalHeader()->setSectionResizeMode(12, QHeaderView::Fixed);
+    m_ruleTable->setColumnWidth(12, 100);
+    m_ruleTable->verticalHeader()->setDefaultSectionSize(42);
     m_ruleTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_ruleTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_ruleTable->setEditTriggers(QAbstractItemView::DoubleClicked | QAbstractItemView::EditKeyPressed);
@@ -698,9 +793,10 @@ void SettingsPage::addRule()
         FrequencySpinBox::formatFrequency(1.0e9), FrequencySpinBox::formatFrequency(0.0),
         FrequencySpinBox::formatFrequency(0.0), QStringLiteral("—"), QStringLiteral("—"),
         QStringLiteral("—"), QStringLiteral("一般"), QStringLiteral("1"), QStringLiteral("0"),
-        QStringLiteral("1"), QStringLiteral("是")};
+        QStringLiteral("1")};
     for (int column = 0; column < values.size(); ++column)
         m_ruleTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+    m_ruleTable->setCellWidget(row, 12, policySwitchCell(true, m_ruleTable));
     qlonglong nextId = 1;
     for (int i = 0; i < row; ++i) nextId = std::max(nextId, m_ruleTable->item(i, 0)->data(Qt::UserRole).toLongLong() + 1);
     m_ruleTable->item(row, 0)->setData(Qt::UserRole, nextId);
@@ -720,9 +816,11 @@ void SettingsPage::addWhitelist()
     const int row = m_whitelistTable->rowCount();
     m_whitelistTable->insertRow(row);
     const QStringList values = {QStringLiteral("新白名单"), FrequencySpinBox::formatFrequency(0.0),
-        FrequencySpinBox::formatFrequency(1.0e9), QStringLiteral("是"), QString()};
+        FrequencySpinBox::formatFrequency(1.0e9)};
     for (int column = 0; column < values.size(); ++column)
         m_whitelistTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+    m_whitelistTable->setCellWidget(row, 3, policySwitchCell(true, m_whitelistTable));
+    m_whitelistTable->setItem(row, 4, new QTableWidgetItem);
     qlonglong nextId = 1;
     for (int i = 0; i < row; ++i) nextId = std::max(nextId, m_whitelistTable->item(i, 0)->data(Qt::UserRole).toLongLong() + 1);
     m_whitelistTable->item(row, 0)->setData(Qt::UserRole, nextId);
@@ -754,7 +852,7 @@ policy::PolicyConfig SettingsPage::policyConfig(QString* error) const
         item.name = m_whitelistTable->item(row, 0)->text().toStdString();
         item.startFrequencyHz = parse(m_whitelistTable, row, 1);
         item.endFrequencyHz = parse(m_whitelistTable, row, 2);
-        item.enabled = m_whitelistTable->item(row, 3)->text().trimmed() != QStringLiteral("否");
+        item.enabled = policySwitchChecked(m_whitelistTable, row, 3);
         item.note = m_whitelistTable->item(row, 4)->text().toStdString();
         config.whitelists.push_back(std::move(item));
     }
@@ -783,7 +881,7 @@ policy::PolicyConfig SettingsPage::policyConfig(QString* error) const
         rule.consecutiveHits = static_cast<std::uint32_t>(m_ruleTable->item(row, 9)->text().toUInt());
         rule.minDurationSeconds = parse(m_ruleTable, row, 10);
         rule.clearDelaySeconds = parse(m_ruleTable, row, 11);
-        rule.enabled = m_ruleTable->item(row, 12)->text().trimmed() != QStringLiteral("否");
+        rule.enabled = policySwitchChecked(m_ruleTable, row, 12);
         config.alarmRules.push_back(std::move(rule));
     }
     std::string validationError;
@@ -799,11 +897,11 @@ void SettingsPage::populatePolicyTables(const policy::PolicyConfig& config)
         const int row = m_whitelistTable->rowCount(); m_whitelistTable->insertRow(row);
         const QStringList values = {QString::fromStdString(item.name),
             FrequencySpinBox::formatFrequency(item.startFrequencyHz),
-            FrequencySpinBox::formatFrequency(item.endFrequencyHz),
-            item.enabled ? QStringLiteral("是") : QStringLiteral("否"),
-            QString::fromStdString(item.note)};
+            FrequencySpinBox::formatFrequency(item.endFrequencyHz)};
         for (int column = 0; column < values.size(); ++column)
             m_whitelistTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+        m_whitelistTable->setCellWidget(row, 3, policySwitchCell(item.enabled, m_whitelistTable));
+        m_whitelistTable->setItem(row, 4, new QTableWidgetItem(QString::fromStdString(item.note)));
         m_whitelistTable->item(row, 0)->setData(Qt::UserRole, item.id);
     }
     m_ruleTable->setRowCount(0);
@@ -819,9 +917,10 @@ void SettingsPage::populatePolicyTables(const policy::PolicyConfig& config)
             rule.useMinConfidence ? QString::number(rule.minConfidence, 'f', 3) : QStringLiteral("—"),
             rule.level == policy::AlarmLevel::Critical ? QStringLiteral("严重") : QStringLiteral("一般"),
             QString::number(rule.consecutiveHits), QString::number(rule.minDurationSeconds, 'f', 3),
-            QString::number(rule.clearDelaySeconds, 'f', 3), rule.enabled ? QStringLiteral("是") : QStringLiteral("否")};
+            QString::number(rule.clearDelaySeconds, 'f', 3)};
         for (int column = 0; column < values.size(); ++column)
             m_ruleTable->setItem(row, column, new QTableWidgetItem(values.at(column)));
+        m_ruleTable->setCellWidget(row, 12, policySwitchCell(rule.enabled, m_ruleTable));
         m_ruleTable->item(row, 0)->setData(Qt::UserRole, rule.id);
     }
     QSettings settings; settings.setValue(QStringLiteral("policy/version"), static_cast<qulonglong>(config.version));

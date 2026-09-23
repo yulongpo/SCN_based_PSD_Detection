@@ -120,7 +120,7 @@ void SpectrumWidget::setSnapshot(const algorithm::DisplaySnapshotPtr& snapshot)
         const bool displayRangeChanged =
             std::abs(newDisplayMaxDb - m_displayMaxDb) > 0.01;
         m_displayMaxDb = newDisplayMaxDb;
-        m_displayMinDb = m_displayMaxDb - 80.0;
+        m_displayMinDb = m_displayMaxDb - m_dynamicRangeDb;
         if (displayRangeChanged || !m_verticalViewInitialized) {
             m_viewMinDb = m_displayMinDb;
             m_viewMaxDb = m_displayMaxDb;
@@ -168,7 +168,7 @@ void SpectrumWidget::setDisplayDomain(double startHz, double endHz,
     m_hasDisplayDomain = true;
     if (std::isfinite(referenceLevelDbm)) {
         m_displayMaxDb = referenceLevelDbm;
-        m_displayMinDb = referenceLevelDbm - 80.0;
+        m_displayMinDb = referenceLevelDbm - m_dynamicRangeDb;
     }
     m_viewMinDb = m_displayMinDb;
     m_viewMaxDb = m_displayMaxDb;
@@ -202,6 +202,22 @@ void SpectrumWidget::setDisplayDomain(double startHz, double endHz,
     if (m_renderWorker) m_renderWorker->reset(m_renderGeneration);
     submitRenderRequest(true);
     if (m_renderSettleTimer) m_renderSettleTimer->start();
+    update();
+}
+
+void SpectrumWidget::setDynamicRangeDb(double dynamicRangeDb)
+{
+    if (!std::isfinite(dynamicRangeDb) || dynamicRangeDb <= 0.0) return;
+    const double safeRangeDb = std::clamp(dynamicRangeDb, 1.0, 200.0);
+    if (std::abs(safeRangeDb - m_dynamicRangeDb) < 1e-9) return;
+
+    m_dynamicRangeDb = safeRangeDb;
+    m_displayMinDb = m_displayMaxDb - m_dynamicRangeDb;
+    m_viewMinDb = m_displayMinDb;
+    m_viewMaxDb = m_displayMaxDb;
+    m_verticalViewInitialized = false;
+    // Keep the rolling 100-frame max/average state; only rebuild its display geometry.
+    submitRenderRequest(false);
     update();
 }
 

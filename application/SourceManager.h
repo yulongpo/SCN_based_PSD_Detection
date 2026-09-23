@@ -17,6 +17,7 @@ public:
     void stop();
     bool read(algorithm::SpectrumFrame& frame);
     bool atFileEnd() const;
+    bool hasOpenLiveSource(algorithm::SourceKind kind) const noexcept;
 
     [[nodiscard]] algorithm::SourceKind kind() const noexcept { return m_config.kind; }
     [[nodiscard]] const source::SourceConfig& config() const noexcept { return m_config; }

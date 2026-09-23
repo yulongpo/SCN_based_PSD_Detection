@@ -29,6 +29,12 @@ struct TrackerConfig
 {
     double overlapRatio = 0.45;
     double maxMissSeconds = 1.0;
+    bool boundaryStabilityEnabled = true;
+    double maxBandwidthRatio = 2.0;
+    double centerDistanceRatio = 0.25;
+    std::size_t medianWindow = 5;
+    double smoothingAlpha = 0.35;
+    std::size_t jumpConfirmationCount = 3;
 };
 struct DetectionConfig
 {

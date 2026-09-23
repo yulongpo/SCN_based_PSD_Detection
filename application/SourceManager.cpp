@@ -45,4 +45,9 @@ bool SourceManager::atFileEnd() const
     return file && file->position() >= file->frameCount();
 }
 
+bool SourceManager::hasOpenLiveSource(algorithm::SourceKind kind) const noexcept
+{
+    return m_source && m_source->kind() == kind && m_source->isLive();
+}
+
 } // namespace scn::application

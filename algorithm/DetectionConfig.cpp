@@ -19,7 +19,12 @@ bool validateConfig(const DetectionConfig& c, std::string& error)
     else if (!c.detector.topK || c.detector.topK > 8192 || !c.detector.maxCandidatesPerWindow || c.detector.maxCandidatesPerWindow > c.detector.topK) error = "Invalid TopK or per-window candidate limit.";
     else if (!std::isfinite(c.refine.cnrThresholdDb)) error = "CNR threshold must be finite.";
     else if (!unit(c.fusion.iou) || !unit(c.fusion.overlapRatio) || !std::isfinite(c.fusion.gapHz) || c.fusion.gapHz < 0) error = "Invalid fusion thresholds.";
-    else if (!unit(c.tracker.overlapRatio) || !std::isfinite(c.tracker.maxMissSeconds) || c.tracker.maxMissSeconds < 0 || c.tracker.maxMissSeconds > 3600) error = "Invalid tracker thresholds.";
+    else if (!unit(c.tracker.overlapRatio) || !std::isfinite(c.tracker.maxMissSeconds) || c.tracker.maxMissSeconds < 0 || c.tracker.maxMissSeconds > 3600 ||
+             !std::isfinite(c.tracker.maxBandwidthRatio) || c.tracker.maxBandwidthRatio < 1.0 || c.tracker.maxBandwidthRatio > 100.0 ||
+             !std::isfinite(c.tracker.centerDistanceRatio) || c.tracker.centerDistanceRatio <= 0.0 || c.tracker.centerDistanceRatio > 10.0 ||
+             c.tracker.medianWindow == 0 || c.tracker.medianWindow > 31 ||
+             !std::isfinite(c.tracker.smoothingAlpha) || c.tracker.smoothingAlpha <= 0.0 || c.tracker.smoothingAlpha > 1.0 ||
+             c.tracker.jumpConfirmationCount < 2 || c.tracker.jumpConfirmationCount > 20) error = "Invalid tracker thresholds.";
     return error.empty();
 }
 
@@ -29,7 +34,9 @@ bool sameConfig(const DetectionConfig& a, const DetectionConfig& b)
         return std::tie(c.enabled, c.maxSignals, c.accumulator.frames, c.detector.modelPath,
             c.detector.deviceIndex, c.detector.inputLength, c.detector.windowStep, c.detector.confidenceThreshold,
             c.detector.nmsIou, c.detector.topK, c.detector.maxCandidatesPerWindow, c.refine.cnrThresholdDb,
-            c.fusion.iou, c.fusion.overlapRatio, c.fusion.gapHz, c.tracker.overlapRatio, c.tracker.maxMissSeconds);
+            c.fusion.iou, c.fusion.overlapRatio, c.fusion.gapHz, c.tracker.overlapRatio, c.tracker.maxMissSeconds,
+            c.tracker.boundaryStabilityEnabled, c.tracker.maxBandwidthRatio, c.tracker.centerDistanceRatio,
+            c.tracker.medianWindow, c.tracker.smoothingAlpha, c.tracker.jumpConfirmationCount);
     };
     return values(a) == values(b);
 }
@@ -40,6 +47,15 @@ ConfigApplyResult classifyConfigChange(const DetectionConfig& a, const Detection
     if (a.detector.modelPath != b.detector.modelPath || a.detector.deviceIndex != b.detector.deviceIndex || a.enabled != b.enabled)
         return ConfigApplyResult::RequiresRestart;
     if (a.accumulator.frames != b.accumulator.frames) return ConfigApplyResult::RequiresReset;
+    if (a.tracker.overlapRatio != b.tracker.overlapRatio ||
+        a.tracker.maxMissSeconds != b.tracker.maxMissSeconds ||
+        a.tracker.boundaryStabilityEnabled != b.tracker.boundaryStabilityEnabled ||
+        a.tracker.maxBandwidthRatio != b.tracker.maxBandwidthRatio ||
+        a.tracker.centerDistanceRatio != b.tracker.centerDistanceRatio ||
+        a.tracker.medianWindow != b.tracker.medianWindow ||
+        a.tracker.smoothingAlpha != b.tracker.smoothingAlpha ||
+        a.tracker.jumpConfirmationCount != b.tracker.jumpConfirmationCount)
+        return ConfigApplyResult::RequiresReset;
     return ConfigApplyResult::Applied;
 }
 }
