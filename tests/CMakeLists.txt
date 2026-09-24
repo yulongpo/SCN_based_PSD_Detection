@@ -8,6 +8,29 @@ foreach(group algorithm channel pipeline source hash frequency)
     set_tests_properties(scn_${group} PROPERTIES TIMEOUT 30)
 endforeach()
 
+# DetectionLab runner tests use a deterministic backend and tiny local files;
+# they never initialize CUDA/TensorRT or execute production inference.
+add_executable(scn_detection_lab_tests
+    DetectionLabTests.cpp
+    ../tools/DetectionLab/LabIO.cpp
+    ../tools/DetectionLab/LabSession.cpp
+)
+target_link_libraries(scn_detection_lab_tests PRIVATE
+    scn_algorithm
+    scn_source
+    scn_application
+    scn_runtime
+    Qt6::Core
+)
+add_test(NAME scn_detection_lab COMMAND scn_detection_lab_tests)
+set_tests_properties(scn_detection_lab PROPERTIES TIMEOUT 30)
+if(WIN32)
+    add_custom_command(TARGET scn_detection_lab_tests POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:Qt6::Core> $<TARGET_FILE_DIR:scn_detection_lab_tests>
+        COMMENT "Deploying Qt Core for DetectionLab CPU tests" VERBATIM)
+endif()
+
 # Real QThread/QTimer session integration, still with a test-only backend/no GPU.
 add_executable(scn_session_tests SessionTests.cpp)
 target_link_libraries(scn_session_tests PRIVATE scn_application)

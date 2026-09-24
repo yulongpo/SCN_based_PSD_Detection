@@ -4,12 +4,16 @@
 用于模型检查、无丢帧离线检测、单帧/Seek 复现和阶段数据导出。
 
 ```powershell
-cmake --build --preset vs2026-qt611-debug --target DetectionLab
+cmake --build --preset vs2026-qt611-debug --target DetectionLabUI DetectionLab
+$gui = '.\out\build\vs2026-qt611-debug\tools\DetectionLab\Debug\DetectionLabUI.exe'
+& $gui
 $lab = '.\out\build\vs2026-qt611-debug\tools\DetectionLab\Debug\DetectionLab.exe'
 & $lab --inspect-model
 & $lab --write-config '.\out\scn-config.json'
 & $lab --file 'path/to/spectrum.dat' --frames 32 --output '.\out\results.jsonl'
 ```
+
+`DetectionLabUI` 是独立的离线图形界面，提供输入与配置、参数编辑、模型检查、逐帧回放、暂停/Seek、频谱与检测结果查看，以及 JSONL/CSV/阶段数据导出和顺序参考对照。界面与命令行入口共用 `LabSession` 执行逻辑；原有 `DetectionLab.exe` 参数和命令行工作流保留。
 
 `--inspect-model` 只初始化真实 engine；`--write-config` 不访问 GPU。
 `--start-frame` 为从 0 开始的帧索引，起点采用空历史渐进累积；`--frames 0` 处理剩余全部帧。
